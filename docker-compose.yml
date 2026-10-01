@@ -1,0 +1,18 @@
+services:
+  cleanarr:
+    build: .
+    container_name: cleanarr
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      # Strongly recommended: protects the UI and API.
+      CLEANARR_API_KEY: "change-me"
+      # Optional: encryption key for stored service API keys. If unset, one is generated in /data/secret.key.
+      # SECRET_KEY: ""
+      LOG_LEVEL: info
+    volumes:
+      - cleanarr-data:/data
+
+volumes:
+  cleanarr-data:
