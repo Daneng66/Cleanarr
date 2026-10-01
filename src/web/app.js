@@ -174,11 +174,10 @@ async function renderDashboard() {
 	const cleanupRules = rules.filter((r) => r.enabled && r.mode === "cleanup");
 	const out = h("div");
 	const notices = h("div", { class: "notices" });
-	if (s.config.dryRun && libs.length) notices.append(notice("Dry run is on: runs only report what they would do, and nothing reaches the mailslot. ", h("a", { href: "#/settings" }, "Turn it off in Settings"), " once the preview looks right."));
+	if (s.config.dryRun && libs.length) notices.append(notice("Dry run is on: runs only report what they would do, and nothing is queued for approval. ", h("a", { href: "#/settings" }, "Turn it off in Settings"), " once the preview looks right."));
 	const main = h("div");
-	const slot = mailslot(pending, s.config);
-	const jump = pending.length ? h("button", { type: "button", class: "jump", onclick: () => slot.scrollIntoView({ behavior: "smooth", block: "start" }) }, h("span", { class: "lampdot" }), `${pending.length} waiting in the mailslot · ${bytes(sum(pending))}`, icon("down")) : null;
-	out.append(notices, h("div", { class: "deck" }, main, slot));
+	const jump = s.config.requireApproval && pending.length ? h("a", { class: "jump", href: "#/approvals" }, h("span", { class: "lampdot" }), `${plural(pending.length, "item")} waiting for approval · ${bytes(sum(pending))}`, icon("arrow")) : null;
+	out.append(notices, main);
 
 	if (!libs.length) {
 		main.append(readout(null, "Connect your library", "Add Sonarr or Radarr and Cleanarr shows what your rules would remove here."),
@@ -189,6 +188,7 @@ async function renderDashboard() {
 		main.append(readout(null, "No cleanup rules yet", "Write a rule and the preview shows exactly what it would pull, before anything changes."),
 			posterState("empty", "Nothing to pull yet", "Rules decide which titles go, e.g. added over a year ago and not watched in 180 days.", h("button", { type: "button", onclick: () => { location.hash = "#/rules"; editRule(); } }, icon("plus"), "Write a rule")),
 			lastRunPanel(s.lastRun));
+		const q = approvalsPanel(pending, s.config); if (q) main.append(q);
 		const lib = h("div", {}, libraryPanel(null)); main.prepend(lib);
 		api("/preview", { method: "POST" }).then((p) => lib.replaceChildren(libraryPanel(p.library))).catch(() => lib.replaceChildren());
 		return out;
@@ -196,8 +196,9 @@ async function renderDashboard() {
 
 	const head = h("div"), strip = h("div"), drivers = h("div"), warn = h("div"), lib = h("div", {}, libraryPanel(null));
 	main.append(lib, head, strip, warn, drivers, lastRunPanel(s.lastRun));
+	const queuePanel = approvalsPanel(pending, s.config); if (queuePanel) main.append(queuePanel);
 	const runBtn = h("button", { type: "button", class: "primary", onclick: (e) => guard(e.currentTarget, async () => {
-		const text = s.config.dryRun ? "This is a dry run: Cleanarr records what it would do and changes nothing." : s.config.requireApproval ? "Matches go to the mailslot. Nothing is removed until you approve it." : "Automatic mode is on: matching items are removed immediately, without approval.";
+		const text = s.config.dryRun ? "This is a dry run: Cleanarr records what it would do and changes nothing." : s.config.requireApproval ? "Matches are queued for approval. Nothing is removed until you approve it." : "Automatic mode is on: matching items are removed immediately, without approval.";
 		if (!(await ask({ title: "Run cleanup now?", text, action: s.config.dryRun ? "Run dry run" : s.config.requireApproval ? "Run and queue" : "Run and remove", danger: !s.config.dryRun && !s.config.requireApproval }))) return;
 		const r = await api("/run", { method: "POST", body: {} });
 		toast(`Run ${r.status}: ${r.itemsFlagged} flagged, ${r.itemsRemoved} removed`);
@@ -220,7 +221,7 @@ async function renderDashboard() {
 			? [nw(`${plural(flagged.length, "title")} flagged by ${plural(ruleCount, "rule")}`), " · ", nw(`${plural(p.evaluated, "title")} evaluated`)]
 			: `${plural(p.evaluated, "title")} evaluated. Your rules match nothing right now.`;
 		head.replaceChildren(readout(reclaim, "reclaimable by your rules", facts, acts, jump));
-		const skippedLink = h("a", { href: "#", onclick: (e) => { e.preventDefault(); openDialog({ kind: "wide", title: plural(p.skipped.length, "skipped title"), lede: "Missing evidence never matches a cleanup rule, so these were left alone.", body: [detailTable(p.skipped, false)], foot: [closeBtn()] }); } }, "See why");
+		const skippedLink = h("a", { href: "#", onclick: (e) => { e.preventDefault(); openDialog({ kind: "wide skips", title: plural(p.skipped.length, "skipped title"), lede: "Each of these already matches a cleanup rule — something else is holding it back.", body: [skippedList(p.skipped)], foot: [closeBtn()] }); } }, "See why");
 		warn.replaceChildren(...(p.warnings.length || p.skipped.length ? [h("div", { class: "notices", style: "margin-top:16px" }, ...p.warnings.map((w) => notice(w)), p.skipped.length ? notice(`${plural(p.skipped.length, "title")} skipped. `, skippedLink) : null)] : []));
 		strip.replaceChildren(flagged.length ? posterGrid(flagged) : posterState("empty", "Shelf is clear", "No title matches a cleanup rule. Loosen a rule or check back after more is added.", h("a", { class: "btn", href: "#/rules" }, "Review rules")));
 		drivers.replaceChildren(flagged.length ? driversPanel(flagged) : "");
@@ -356,35 +357,37 @@ function lastRunPanel(r) {
 	return h("section", { style: "margin-top:28px" }, h("div", { class: "section-title" }, h("h2", { class: "grow" }, "Last run"), h("a", { href: "#/history", class: "small" }, "All runs")),
 		h("div", { class: "panel" }, h("div", { class: "lastrun" }, state(r.status), h("span", { class: "tag" }, r.isDryRun ? "Dry run" : "Live"), timeEl(r.startedAt), h("span", {}, `${r.itemsEvaluated} evaluated · ${r.itemsFlagged} flagged · ${r.itemsRemoved} removed · ${r.itemsSkipped} skipped`), r.warnings.length ? h("a", { href: "#/history" }, plural(r.warnings.length, "warning")) : null)));
 }
+/** Approval queue summary; only relevant while approval is required. `null` when it has nothing to say. */
+function approvalsPanel(pending, config) {
+	if (!config.requireApproval) return null;
+	const n = pending.length;
+	return h("section", { style: "margin-top:28px" }, h("div", { class: "section-title" }, h("h2", { class: "grow" }, "Approval queue"), n ? h("a", { href: "#/approvals", class: "small" }, "Review") : null),
+		h("div", { class: "panel lastrun" }, n ? h("span", { class: "count" }, n) : state("loaded", "Clear"), h("span", {}, n ? `${plural(n, "title")} waiting · ${bytes(sum(pending))} reclaimable` : "Nothing waiting for approval")));
+}
 
-function mailslot(pending, config) {
-	const has = pending.length > 0;
-	const list = h("ul", { class: "queue" });
-	const decide = (a, action, li) => async (e) => {
-		const btn = e.currentTarget;
-		if (action === "approve" && !(await ask({ title: `Remove “${nameOf(a)}” now?`, text: `${bytes(a.sizeOnDisk)} · ${a.ruleName}. Cleanarr re-checks it against live data first and blocks the removal if anything changed.`, action: "Approve and remove", danger: true }))) return;
-		await guard(btn, async () => {
-			const r = await api("/approvals/bulk", { method: "POST", body: { ids: [a.id], action } });
-			const bad = r.results.find((x) => !x.ok);
-			if (bad) throw new Error(bad.error);
-			toast(action === "approve" ? `Approved ${nameOf(a)}` : `Rejected ${nameOf(a)}`);
-			li.classList.add("leaving"); lastPreview = null; setTimeout(route, 200);
-		});
-	};
-	for (const a of pending.slice(0, 6)) {
-		const li = h("li");
-		li.append(h("div", { class: "t", title: nameOf(a) }, nameOf(a), a.year ? ` (${a.year})` : ""), h("div", { class: "m" }, vol(a), ` ${bytes(a.sizeOnDisk)} · ${a.ruleName}`),
-			h("div", { class: "a" }, iconBtn("x", `Reject ${nameOf(a)}`, decide(a, "reject", li)), iconBtn("check", `Approve ${nameOf(a)}`, decide(a, "approve", li), "danger")));
-		list.append(li);
-	}
-	const body = has ? list
-		: config.dryRun ? empty("Nothing queued in dry run", "With dry run off and approval on, every match waits here for your decision.")
-		: !config.requireApproval ? empty("Automatic mode", "Matches are removed without waiting here.", h("a", { class: "btn", href: "#/settings" }, "Require approval"))
-		: empty("Nothing waiting", "New matches arrive after the next run.");
-	return h("aside", { class: `mailslot ${has ? "has" : ""}`, "aria-label": "Approval mailslot" },
-		h("div", { class: "panel" }, h("div", { class: "panel-head" }, h("span", { class: "lamp" }), h("h2", {}, "Mailslot"), has ? h("span", { class: "sum" }, `${pending.length} · ${bytes(sum(pending))}`) : null),
-			body,
-			has ? h("div", { class: "foot" }, h("a", { class: "btn", href: "#/approvals" }, pending.length > 6 ? `Review all ${pending.length}` : "Open the queue", icon("arrow"))) : null));
+// A cleanup match is held back for exactly one of three reasons; the mark vocabulary already has a face for each.
+const SKIP_ORDER = ["protected", "pending_approval", "rejected", "skipped"];
+function skipCategory(d) {
+	const m = d.message || "";
+	if (m.startsWith("Protected by retention rule") || m.startsWith("Retention rule")) return ["protected", "Protected"];
+	if (m === "Already has an open approval") return ["pending_approval", "Already queued"];
+	if (m.startsWith("Previously rejected")) return ["rejected", "Recently rejected"];
+	return ["skipped", "Skipped"];
+}
+function skippedList(rows) {
+	const sorted = [...rows].sort((a, b) => SKIP_ORDER.indexOf(skipCategory(a)[0]) - SKIP_ORDER.indexOf(skipCategory(b)[0]) || b.sizeOnDisk - a.sizeOnDisk);
+	return h("div", { class: "skip-grid" }, sorted.map((d) => {
+		const [cat, label] = skipCategory(d);
+		const badge = state(cat, label);
+		const art = d.poster
+			? h("img", { src: d.poster, alt: "", class: "art", loading: "lazy", decoding: "async", onerror: (e) => e.target.replaceWith(h("span", { class: "art noart" }, d.title)) })
+			: h("span", { class: "art noart" }, d.title);
+		return h("div", { class: "skip-card" }, art,
+			h("div", { class: "body" },
+				h("div", { class: "t" }, nameOf(d), h("small", {}, kindLabel(d.itemType), d.certification ? [" · ", h("span", { class: "cert" }, d.certification)] : null)),
+				h("div", { class: "why" }, actionTag(d.action), ` ${d.ruleName}: ${d.reason}`),
+				h("div", { class: "foot" }, cat === "pending_approval" ? h("a", { href: "#/approvals", onclick: () => dialog.close() }, badge) : badge, h("span", { class: "sz" }, bytes(d.sizeOnDisk)))));
+	}));
 }
 
 function detailTable(rows, withWhy) {
@@ -801,7 +804,7 @@ async function renderSettings() {
 	const rej = h("select", { id: uid() }, [["0", "Off: rejected items can be proposed again next run"], ["30", "30 days"], ["90", "90 days"], ["365", "1 year"], ["forever", "Forever"]].map(([v, l]) => h("option", { value: v, selected: v === (c.rejectionMemoryDays === null ? "forever" : String(c.rejectionMemoryDays)) }, l)));
 	const sw = (checked, label, help) => { const i = h("input", { type: "checkbox", checked }); return [i, h("label", { class: "switch" }, i, h("div", {}, h("div", { class: "t" }, label), h("div", { class: "d" }, help)))]; };
 	const [dry, dryF] = sw(c.dryRun, "Dry run", "Report what would be removed without changing anything or queueing approvals. Keep this on until the preview looks right.");
-	const [appr, apprF] = sw(c.requireApproval, "Require approval", "Matches wait in the mailslot for your decision instead of being removed automatically.");
+	const [appr, apprF] = sw(c.requireApproval, "Require approval", "Matches wait in the approval queue for your decision instead of being removed automatically.");
 	const [on, onF] = sw(c.enabled, "Run on a schedule", "Run cleanup automatically at the interval below.");
 	const f = (label, input, help) => h("div", { class: "field" }, h("label", { class: "lbl", htmlFor: input.id }, label), input, help ? h("div", { class: "help" }, help) : null);
 	const save = h("button", { type: "button", class: "primary", onclick: (e) => guard(e.currentTarget, async () => {
@@ -815,7 +818,7 @@ async function renderSettings() {
 	return h("div", { style: "max-width:760px" }, h("div", { class: "page-head" }, h("div", {}, h("h1", {}, "Settings"), h("p", { class: "lede" }, "How cautious Cleanarr is, and when it runs."))),
 		panel("Safety", dryF, apprF),
 		panel("Schedule", onF, h("div", { style: "margin-top:12px" }, f("Run every (hours)", interval))),
-		panel("Limits", h("div", { class: "cols" }, f("Max removals per run", max, "Caps both removals and new approvals."), f("Approvals expire after (days)", expiry)), f("Rejection memory", rej, "How long a rejected item stays out of the mailslot.")),
+		panel("Limits", h("div", { class: "cols" }, f("Max removals per run", max, "Caps both removals and new approvals."), f("Approvals expire after (days)", expiry)), f("Rejection memory", rej, "How long a rejected item stays out of the approval queue.")),
 		h("div", { class: "row end", style: "margin-top:20px" }, save));
 }
 

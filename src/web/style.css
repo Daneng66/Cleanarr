@@ -143,6 +143,7 @@ input[type=checkbox] { accent-color: var(--ink); width: 18px; height: 18px; min-
 .switch input[type=checkbox]::after, input[type=checkbox].toggle::after { content: ""; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%; background: var(--label); box-shadow: 0 1px 2px rgb(0 0 0 / .3); transition: transform .09s var(--step); }
 .switch input[type=checkbox]:checked, input[type=checkbox].toggle:checked { background: var(--ink); }
 .switch input[type=checkbox]:checked::after, input[type=checkbox].toggle:checked::after { transform: translateX(16px); }
+@media (prefers-color-scheme: dark) { .switch input[type=checkbox]:checked::after, input[type=checkbox].toggle:checked::after { background: var(--rack); box-shadow: none; } }
 .switch .t { font-weight: 600; }
 .switch .d { color: var(--ink-2); font-size: 14px; margin-top: 2px; max-width: 64ch; }
 
@@ -173,7 +174,6 @@ input[type=checkbox] { accent-color: var(--ink); width: 18px; height: 18px; min-
 .notices { margin-bottom: 18px; }
 
 /* ── Dashboard ────────────────────────────────────────────────────────── */
-.deck { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 28px; align-items: start; }
 .readout { display: flex; align-items: flex-end; gap: 16px 32px; flex-wrap: wrap; margin-bottom: 22px; }
 .readout .fig { display: flex; align-items: baseline; gap: 10px; font-family: var(--cond); line-height: .85; }
 .readout .fig .n { font-size: 92px; font-weight: 700; letter-spacing: -.02em; }
@@ -225,7 +225,7 @@ input[type=checkbox] { accent-color: var(--ink); width: 18px; height: 18px; min-
 .detail .basis { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 14px; margin: 18px 0; font-size: 14px; }
 .detail .basis dt { color: var(--ink-3); }
 .detail .basis dd { margin: 0; text-wrap: pretty; }
-.detail .cert { display: inline-block; padding: 1px 6px; border: 1px solid var(--line-2); border-radius: 3px; font: 600 13px/1.4 var(--cond); letter-spacing: .03em; }
+.cert { display: inline-block; padding: 1px 6px; border: 1px solid var(--line-2); border-radius: 3px; font: 600 13px/1.4 var(--cond); letter-spacing: .03em; }
 .detail .acts { display: flex; gap: 8px; }
 .detail > .x { grid-column: 1 / -1; padding-top: 16px; border-top: 1px solid var(--line); }
 .vol { display: inline-block; padding: 2px 5px; border-radius: 2px; background: var(--label); color: var(--label-ink); box-shadow: inset 0 0 0 1px var(--line-2); font: 500 11px/1.2 var(--mono); letter-spacing: .08em; vertical-align: 1px; }
@@ -242,29 +242,31 @@ input[type=checkbox] { accent-color: var(--ink); width: 18px; height: 18px; min-
 .drivers .v { font: 500 14px/1 var(--mono); text-align: right; white-space: nowrap; }
 .drivers .v small { display: block; margin-top: 5px; font: 400 12px/1 var(--sans); color: var(--ink-3); }
 
-/* Mailslot */
-.mailslot { position: sticky; top: 80px; }
-.mailslot .panel-head h2 { flex: 1; }
-.mailslot .lamp { width: 10px; height: 10px; border-radius: 50%; background: var(--line-2); flex: none; }
-.mailslot.has .lamp { background: var(--amber-lamp); box-shadow: 0 0 0 4px color-mix(in srgb, var(--amber-lamp) 25%, transparent); }
-.mailslot .sum { font: 500 13px/1 var(--mono); color: var(--ink-2); }
-.queue { list-style: none; margin: 0; padding: 0; }
-.queue li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 3px 10px; align-items: center; padding: 12px 16px; border-top: 1px solid var(--line); }
-.queue li:first-child { border-top: 0; }
-.queue .t { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.queue .m { color: var(--ink-3); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.queue .a { grid-row: 1 / span 2; grid-column: 2; display: flex; gap: 6px; align-items: center; }
 .leaving { animation: eject .18s var(--step) forwards; }
 @keyframes eject { to { transform: translateX(28px); opacity: 0; } }
-.mailslot .foot { padding: 12px 16px; border-top: 1px solid var(--line); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .empty { padding: 28px 18px; text-align: center; color: var(--ink-2); }
 .empty .h { font: 600 18px/1.2 var(--cond); color: var(--ink); margin-bottom: 6px; }
 .empty p { margin: 0 auto 14px; max-width: 46ch; }
 .empty p:last-child { margin-bottom: 0; }
 
-.jump { display: none; align-items: center; gap: 6px; margin-top: 8px; padding: 0; min-height: 0; border: 0; background: none; color: var(--amber); font: 600 14px/1.3 var(--sans); }
+.jump { display: inline-flex; align-items: center; gap: 6px; margin-top: 8px; padding: 0; min-height: 0; border: 0; background: none; color: var(--amber); font: 600 14px/1.3 var(--sans); }
 .jump:hover { background: none; text-decoration: underline; text-underline-offset: 3px; }
 .jump .lampdot { width: 8px; height: 8px; border-radius: 50%; background: var(--amber-lamp); }
+
+.skip-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.skip-card { display: flex; align-items: flex-start; gap: 12px; padding: 12px; border: 1px solid var(--line); border-radius: var(--radius); min-width: 0; }
+.skip-card .art { width: 54px; aspect-ratio: 2 / 3; border-radius: 4px; object-fit: cover; background: var(--well); flex: none; }
+.skip-card .art.noart { display: grid; place-items: center; padding: 4px; text-align: center; font: 600 11px/1.15 var(--cond); color: var(--ink-2); }
+.skip-card .body { min-width: 0; flex: 1; }
+.skip-card .t { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.skip-card .t small { display: block; margin-top: 2px; font-weight: 400; font-size: 12px; color: var(--ink-3); }
+.skip-card .t small .cert { font-size: 11px; vertical-align: 1px; }
+.skip-card .why { margin-top: 6px; font-size: 12.5px; color: var(--ink-2); text-wrap: pretty; }
+.skip-card .why .tag { margin-right: 5px; vertical-align: 1px; }
+.skip-card .foot { margin-top: 10px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.skip-card .foot a { text-decoration: none; }
+.skip-card .foot a:hover .state { text-decoration: underline; text-underline-offset: 3px; }
+.skip-card .sz { font: 500 12px/1 var(--mono); color: var(--ink-3); white-space: nowrap; }
 .lastrun { display: flex; gap: 8px 14px; align-items: center; flex-wrap: wrap; padding: 13px 16px; color: var(--ink-2); font-size: 14px; }
 
 /* ── Lists & tables ───────────────────────────────────────────────────── */
@@ -365,6 +367,7 @@ dialog { border: 1px solid var(--line); border-radius: 10px; background: var(--r
 dialog[open] { display: flex; flex-direction: column; }
 dialog::backdrop { background: rgb(10 12 14 / .55); }
 dialog.wide { width: min(720px, calc(100vw - 32px)); }
+dialog.skips { width: min(860px, calc(100vw - 32px)); }
 dialog.sheet { width: min(780px, 100vw); height: 100dvh; max-height: 100dvh; margin: 0 0 0 auto; border-radius: 0; border-width: 0 0 0 1px; }
 dialog[open].sheet { animation: slide-in .18s var(--step); }
 @keyframes slide-in { from { transform: translateX(40px); } }
@@ -425,9 +428,6 @@ input[aria-invalid=true] { border-color: var(--red); }
 
 /* ── Responsive ───────────────────────────────────────────────────────── */
 @media (max-width: 1020px) {
-	.deck { grid-template-columns: minmax(0, 1fr); }
-	.jump { display: inline-flex; }
-	.mailslot { position: static; }
 	.approvals > li { grid-template-columns: 28px minmax(0, 1fr) 90px auto; }
 	.approvals > li > .why, .approvals > li > .exp { display: none; }
 	.approvals .t .why-inline { display: block; }
@@ -447,11 +447,11 @@ input[aria-invalid=true] { border-color: var(--red); }
 	.detail { grid-template-columns: 84px minmax(0, 1fr); gap: 16px; }
 	.detail .fig .n { font-size: 36px; }
 	.detail .fig .u { font-size: 16px; }
+	.skip-grid { grid-template-columns: 1fr; }
 	.detail .acts button { min-height: 44px; }
 	.drivers li { grid-template-columns: minmax(0, 1fr) auto; }
 	.drivers .bar { grid-column: 1 / -1; grid-row: 2; }
-	.queue .a button, .approvals .a button { min-height: 44px; width: 44px; }
-	.mailslot .foot button { min-height: 44px; flex: 1; }
+	.approvals .a button { min-height: 44px; width: 44px; }
 	.approvals > li { grid-template-columns: 28px minmax(0, 1fr); gap: 8px 12px; align-items: start; }
 	.approvals > li > :first-child { padding-top: 2px; }
 	.approvals > li > .sz, .approvals > li.head { display: none; }
