@@ -11,6 +11,7 @@ import { parseExpression } from "./rules/expression.js";
 import * as S from "./routes/schemas.js";
 import type { Store } from "./store.js";
 import { createProviders, testConnection } from "./services.js";
+import { listSeerrUsers } from "./seerr/seerr.js";
 import type { Db } from "./db.js";
 
 export interface AppDeps {
@@ -70,6 +71,12 @@ export function buildApp(deps: AppDeps): FastifyInstance {
 		api.get("/auth", async () => ({ required: !!deps.apiKey }));
 		api.get("/rule-types", async () => describeRuleTypes());
 		api.get("/rule-templates", async () => describeTemplates());
+		// Seerr users across enabled Seerr instances; an unreachable instance just contributes no names.
+		api.get("/requesters", async () => {
+			const lists = await Promise.allSettled(store.instances.list().filter((i) => i.enabled && i.type === "seerr").map((i) => listSeerrUsers(i)));
+			const names = lists.flatMap((r) => (r.status === "fulfilled" ? r.value : []));
+			return [...new Set(names)].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+		});
 
 		// Instances. API keys are write-only: never returned.
 		const publicInstance = (i: { id: string; name: string; type: string; url: string; enabled: boolean }) => ({ id: i.id, name: i.name, type: i.type, url: i.url, enabled: i.enabled });
@@ -115,8 +122,11 @@ export function buildApp(deps: AppDeps): FastifyInstance {
 		});
 		api.post("/explain", async (req) => {
 			const b = S.explainRequest.parse(req.body);
-			return engine.explain(b.instanceId, b.arrItemId);
+			return engine.explain(b.instanceId, b.arrItemId, b.seasonNumber);
 		});
+		api.get<{ Params: { instanceId: string; seriesId: string }; Querystring: { season?: string } }>("/series/:instanceId/:seriesId/episodes", async (req) =>
+			engine.episodesOnDisk(req.params.instanceId, Number(req.params.seriesId), req.query.season !== undefined ? Number(req.query.season) : null),
+		);
 		api.get<{ Querystring: { limit?: string; offset?: string } }>("/logs", async (req) => store.logs.list(Math.min(Number(req.query.limit ?? 50), 200), Number(req.query.offset ?? 0)));
 		api.get<{ Params: { id: string } }>("/logs/:id", async (req, reply) => store.logs.get(req.params.id) ?? reply.code(404).send({ error: "Not found" }));
 

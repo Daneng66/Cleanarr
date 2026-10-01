@@ -14,9 +14,14 @@ const MAX_LIBRARY_ITEMS = 250_000;
 interface PlexMeta {
 	ratingKey?: string | number;
 	grandparentRatingKey?: string | number;
+	/** "/library/metadata/<ratingKey>"; some servers send only this on history rows. */
+	grandparentKey?: string;
 	type?: string;
 	accountID?: number;
 	viewedAt?: number;
+	/** Episode rows: season and episode number. */
+	parentIndex?: number;
+	index?: number;
 	Guid?: Array<{ id?: string }>;
 }
 
@@ -75,36 +80,51 @@ export function createPlexProvider(instance: Pick<Instance, "url" | "apiKey">, f
 				}
 			}
 
-			type Agg = { kind: "movie" | "series"; last: number; count: number; users: Set<string> };
+			type Agg = { kind: "movie" | "series" | "season"; last: number; count: number; users: Set<string>; episodes?: Map<string, Set<number>> };
 			const roots = new Map<string, Agg>();
+			const add = (key: string, kind: Agg["kind"], row: PlexMeta, user: string | undefined) => {
+				const agg = roots.get(key) ?? { kind, last: 0, count: 0, users: new Set<string>() };
+				agg.count++;
+				if (typeof row.viewedAt === "number") agg.last = Math.max(agg.last, row.viewedAt);
+				if (user) agg.users.add(user);
+				roots.set(key, agg);
+				return agg;
+			};
 			const history = await paged<PlexMeta>("/status/sessions/history/all?sort=viewedAt:desc", MAX_HISTORY_ROWS, "watch history");
 			for (const row of history) {
 				const isEpisode = row.type === "episode";
 				if (!isEpisode && row.type !== "movie") continue;
-				const key = String(isEpisode ? (row.grandparentRatingKey ?? "") : (row.ratingKey ?? ""));
+				const key = String(isEpisode ? (row.grandparentRatingKey ?? /\/(\d+)$/.exec(row.grandparentKey ?? "")?.[1] ?? "") : (row.ratingKey ?? ""));
 				if (!key) continue;
-				const agg = roots.get(key) ?? { kind: isEpisode ? "series" : "movie", last: 0, count: 0, users: new Set<string>() };
-				agg.count++;
-				if (typeof row.viewedAt === "number") agg.last = Math.max(agg.last, row.viewedAt);
 				const user = row.accountID !== undefined ? names.get(row.accountID) : undefined;
-				if (user) agg.users.add(user);
-				roots.set(key, agg);
+				add(key, isEpisode ? "series" : "movie", row, user);
+				if (isEpisode && typeof row.parentIndex === "number") {
+					// Season aggregates are keyed "<show ratingKey>#<season>" and resolve through the show's guids.
+					const season = add(`${key}#${row.parentIndex}`, "season", row, user);
+					if (user && typeof row.index === "number") {
+						season.episodes ??= new Map();
+						const set = season.episodes.get(user) ?? new Set<number>();
+						set.add(row.index);
+						season.episodes.set(user, set);
+					}
+				}
 			}
 
 			const byKey = new Map<string, WatchInfo>();
 			let unresolved = 0;
-			for (const [ratingKey, agg] of roots) {
-				const guids = guidsByKey.get(ratingKey);
+			for (const [rootKey, agg] of roots) {
+				const [ratingKey, season] = rootKey.split("#");
+				const guids = guidsByKey.get(ratingKey as string);
 				if (!guids?.length) {
-					unresolved++; // removed from Plex since it was watched
+					if (season === undefined) unresolved++; // removed from Plex since it was watched
 					continue;
 				}
 				for (const g of guids) {
 					const m = /^(tmdb|tvdb):\/\/(\d+)$/.exec(g);
 					if (!m) continue;
-					const k = `${agg.kind}:${m[1]}:${m[2]}`;
+					const k = `${agg.kind}:${m[1]}:${m[2]}${season === undefined ? "" : `:${season}`}`;
 					const prev = byKey.get(k);
-					const next: WatchInfo = { lastWatchedAt: agg.last ? new Date(agg.last * 1000) : null, watchCount: agg.count, watchedBy: [...agg.users] };
+					const next: WatchInfo = { lastWatchedAt: agg.last ? new Date(agg.last * 1000) : null, watchCount: agg.count, watchedBy: [...agg.users], ...(agg.episodes ? { episodesByUser: agg.episodes } : {}) };
 					byKey.set(k, prev ? mergeInfo(prev, next) : next);
 				}
 			}
@@ -114,7 +134,9 @@ export function createPlexProvider(instance: Pick<Instance, "url" | "apiKey">, f
 				warnings,
 				lookup(item: LibraryItem) {
 					if (item.kind === "movie") return item.tmdbId !== null ? byKey.get(`movie:tmdb:${item.tmdbId}`) : undefined;
-					return (item.tvdbId !== null ? byKey.get(`series:tvdb:${item.tvdbId}`) : undefined) ?? (item.tmdbId !== null ? byKey.get(`series:tmdb:${item.tmdbId}`) : undefined);
+					const kind = item.season ? "season" : "series";
+					const sfx = item.season ? `:${item.season.number}` : "";
+					return (item.tvdbId !== null ? byKey.get(`${kind}:tvdb:${item.tvdbId}${sfx}`) : undefined) ?? (item.tmdbId !== null ? byKey.get(`${kind}:tmdb:${item.tmdbId}${sfx}`) : undefined);
 				},
 			};
 		},
@@ -123,7 +145,17 @@ export function createPlexProvider(instance: Pick<Instance, "url" | "apiKey">, f
 
 function mergeInfo(a: WatchInfo, b: WatchInfo): WatchInfo {
 	const dates = [a.lastWatchedAt, b.lastWatchedAt].filter((d): d is Date => !!d).sort((x, y) => y.getTime() - x.getTime());
-	return { lastWatchedAt: dates[0] ?? null, watchCount: a.watchCount + b.watchCount, watchedBy: [...new Set([...a.watchedBy, ...b.watchedBy])] };
+	const episodesByUser = mergeEpisodes([a.episodesByUser, b.episodesByUser]);
+	return { lastWatchedAt: dates[0] ?? null, watchCount: a.watchCount + b.watchCount, watchedBy: [...new Set([...a.watchedBy, ...b.watchedBy])], ...(episodesByUser ? { episodesByUser } : {}) };
+}
+
+/** Union of per-user watched episode sets; undefined when none of the inputs has any. */
+export function mergeEpisodes(maps: Array<Map<string, Set<number>> | undefined>): Map<string, Set<number>> | undefined {
+	const present = maps.filter((m): m is Map<string, Set<number>> => !!m);
+	if (!present.length) return undefined;
+	const out = new Map<string, Set<number>>();
+	for (const m of present) for (const [u, eps] of m) out.set(u, new Set([...(out.get(u) ?? []), ...eps]));
+	return out;
 }
 
 export async function testPlex(instance: Pick<Instance, "url" | "apiKey">, fetchFn: FetchFn = fetch) {

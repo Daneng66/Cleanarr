@@ -10,6 +10,8 @@ export interface SeerrRequest {
 	is4k: boolean;
 	/** Every name this requester is known by (display, username, Plex name, email), for matching watch history. */
 	requesters: string[];
+	/** TV requests: the season numbers asked for; null for movies or when Seerr didn't say. */
+	seasons?: number[] | null;
 }
 
 export interface SeerrProvider {
@@ -43,6 +45,7 @@ export function createSeerrProvider(instance: Pick<Instance, "url" | "apiKey">, 
 						createdAt: new Date(r.createdAt),
 						updatedAt: new Date(r.updatedAt ?? r.createdAt),
 						is4k: r.is4k === true,
+						seasons: Array.isArray(r.seasons) && r.seasons.length ? r.seasons.map((x: any) => x.seasonNumber).filter((n: unknown): n is number => typeof n === "number") : null,
 						requesters: [u.displayName, u.username, u.plexUsername, u.jellyfinUsername, u.email].filter((x): x is string => typeof x === "string" && x.length > 0),
 					};
 					const kind = r.media.mediaType === "movie" ? "movie" : "series";
@@ -62,11 +65,30 @@ export function createSeerrProvider(instance: Pick<Instance, "url" | "apiKey">, 
 					const hits = item.kind === "movie"
 						? [...(item.tmdbId !== null ? (byKey.get(`movie:tmdb:${item.tmdbId}`) ?? []) : [])]
 						: [...(item.tvdbId !== null ? (byKey.get(`series:tvdb:${item.tvdbId}`) ?? []) : []), ...(item.tmdbId !== null ? (byKey.get(`series:tmdb:${item.tmdbId}`) ?? []) : [])];
-					return [...new Map(hits.map((h) => [h.id, h])).values()]; // same request can be indexed under both ids
+					const unique = [...new Map(hits.map((h) => [h.id, h])).values()]; // same request can be indexed under both ids
+					// A season item only counts requests that asked for that season.
+					return item.season ? unique.filter((r) => !r.seasons || r.seasons.includes(item.season!.number)) : unique;
 				},
 			};
 		},
 	};
+}
+
+/** Display names of every Seerr user, for picking requesters in the rule editor. */
+export async function listSeerrUsers(instance: Pick<Instance, "url" | "apiKey">, fetchFn: FetchFn = fetch): Promise<string[]> {
+	const base = instance.url.replace(/\/+$/, "");
+	const names: string[] = [];
+	for (let skip = 0; skip < 10_000; skip += PAGE) {
+		const res = await fetchFn(`${base}/api/v1/user?take=${PAGE}&skip=${skip}`, { headers: { "X-Api-Key": instance.apiKey, Accept: "application/json" }, signal: AbortSignal.timeout(15_000) });
+		if (!res.ok) throw new Error(`Seerr user list failed: HTTP ${res.status}`);
+		const body = (await res.json()) as { pageInfo?: { results?: number }; results?: any[] };
+		for (const u of body.results ?? []) {
+			const name = [u.displayName, u.username, u.plexUsername, u.email].find((x) => typeof x === "string" && x.length > 0);
+			if (name) names.push(name);
+		}
+		if (!body.results?.length || skip + PAGE >= (body.pageInfo?.results ?? 0)) break;
+	}
+	return names;
 }
 
 export async function testSeerr(instance: Pick<Instance, "url" | "apiKey">, fetchFn: FetchFn = fetch) {

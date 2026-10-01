@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createPlexProvider, testPlex } from "../src/watch/plex.js";
-import { createSeerrProvider, testSeerr } from "../src/seerr/seerr.js";
+import { createSeerrProvider, listSeerrUsers, testSeerr } from "../src/seerr/seerr.js";
 import Database from "better-sqlite3";
 import { migrate } from "../src/db.js";
 import { createEncryptor } from "../src/crypto.js";
@@ -63,6 +63,17 @@ describe("Plex provider", () => {
 		expect(lookup(mItem(2))).toBeUndefined(); // in Plex, never watched
 		expect(warnings).toEqual([]);
 	});
+	it("tracks which episodes each user watched per season", async () => {
+		// Show identified only by grandparentKey, as some Plex servers send it.
+		const ep = (season: number, n: number, accountID: number) => ({ type: "episode", ratingKey: `e${season}${n}`, grandparentKey: "/library/metadata/200", parentIndex: season, index: n, accountID, viewedAt: day(1) });
+		const { fn } = fakePlex({ history: [ep(1, 1, 2), ep(1, 2, 2), ep(1, 2, 2), ep(1, 3, 1), ep(2, 1, 2)] });
+		const { lookup } = await createPlexProvider({ url: "http://plex", apiKey: "tok" }, fn).load();
+		const season = (n: number) => ({ ...sItem(1), kind: "season" as const, season: { number: n, episodes: [] } });
+		expect(lookup(season(1))?.episodesByUser).toEqual(new Map([["Alice", new Set([1, 2])], ["owner", new Set([3])]]));
+		expect(lookup(season(2))?.episodesByUser).toEqual(new Map([["Alice", new Set([1])]]));
+		expect(lookup(season(3))).toBeUndefined();
+		expect(lookup(sItem(1))?.watchCount).toBe(5); // the series total is unchanged
+	});
 	it("pages through large histories", async () => {
 		const history = Array.from({ length: 1234 }, (_, i) => ({ type: "movie", ratingKey: "100", accountID: 1, viewedAt: day(i) }));
 		const { fn, requests } = fakePlex({ history });
@@ -111,6 +122,24 @@ describe("Seerr provider", () => {
 		expect(lookup(mItem(1))[0]?.requesters).toEqual(["Alice", "alice_plex", "a@x.io"]);
 		expect(lookup(sItem(1))).toHaveLength(1); // found under both tvdb and tmdb, returned once
 		expect(lookup(mItem(2))).toEqual([]);
+	});
+	it("season items only see requests that asked for that season", async () => {
+		const { fn } = fakeSeerr([sreq(1, { mediaType: "tv", tvdbId: 2001 }, { seasons: [{ seasonNumber: 1 }] }), sreq(2, { mediaType: "tv", tvdbId: 2001 }, { seasons: [{ seasonNumber: 2 }] })]);
+		const { lookup } = await createSeerrProvider({ url: "http://s", apiKey: "sk" }, fn).load();
+		const season = (n: number) => ({ ...sItem(1), kind: "season" as const, season: { number: n, episodes: [] } });
+		expect(lookup(season(2)).map((r) => r.id)).toEqual([2]);
+		expect(lookup(sItem(1)).map((r) => r.id)).toEqual([1, 2]);
+	});
+	it("lists users by their best available name, across pages", async () => {
+		const users = [...Array.from({ length: 100 }, (_, i) => ({ displayName: `U${i}` })), { displayName: "", username: "bob" }, { email: "c@x.io" }, {}];
+		const fn = (async (input: any) => {
+			const u = new URL(String(input));
+			const skip = Number(u.searchParams.get("skip"));
+			return json({ pageInfo: { results: users.length }, results: users.slice(skip, skip + 100) });
+		}) as typeof fetch;
+		const names = await listSeerrUsers({ url: "http://s", apiKey: "sk" }, fn);
+		expect(names).toHaveLength(102);
+		expect(names.slice(-2)).toEqual(["bob", "c@x.io"]);
 	});
 	it("ignores declined requests", async () => {
 		const { fn } = fakeSeerr([sreq(1, { mediaType: "movie", tmdbId: 1001 }, { status: 3 })]);
@@ -165,11 +194,28 @@ describe("migration 3", () => {
 		db.prepare("INSERT INTO instances (id,name,type,url,api_key_enc,created_at) VALUES ('t','T','tautulli','http://t','x','now')").run();
 		db.prepare("INSERT INTO instances (id,name,type,url,api_key_enc,created_at) VALUES ('p','P','plex','http://p','x','now')").run();
 
-		migrate(db);
+		migrate(db, 3);
 
 		expect(db.prepare("SELECT id FROM instances").all()).toEqual([{ id: "p" }]);
 		expect(db.prepare("SELECT name FROM sqlite_master WHERE name='tautulli_guid_cache'").get()).toBeUndefined();
 		expect(() => db.prepare("INSERT INTO instances (id,name,type,url,api_key_enc,created_at) VALUES ('t2','T','tautulli','http://t','x','now')").run()).toThrow(/CHECK/);
 		expect(db.pragma("user_version", { simple: true })).toBe(3);
+	});
+});
+
+describe("migration 4", () => {
+	it("keeps rules and approvals and allows season rules and approvals", () => {
+		const db = new Database(":memory:");
+		migrate(db, 3);
+		db.prepare("INSERT INTO rules (id,name,expression,created_at,updated_at) VALUES ('r1','R','{}','now','now')").run();
+		db.prepare("INSERT INTO approvals (id,instance_id,arr_item_id,item_type,title,rule_id,rule_name,reason,action,safety_snapshot,expires_at,created_at) VALUES ('a1','i',1,'movie','M','r1','R','x','delete','{}','now','now')").run();
+
+		migrate(db);
+
+		expect(db.prepare("SELECT id, action FROM rules").all()).toEqual([{ id: "r1", action: "delete" }]);
+		expect(db.prepare("SELECT id, season_number FROM approvals").all()).toEqual([{ id: "a1", season_number: null }]);
+		expect(() => db.prepare("UPDATE rules SET action='delete_season'").run()).not.toThrow();
+		expect(() => db.prepare("INSERT INTO approvals (id,instance_id,arr_item_id,season_number,item_type,title,rule_id,rule_name,reason,action,safety_snapshot,expires_at,created_at) VALUES ('a2','i',1,2,'season','S','r1','R','x','delete_season','{}','now','now')").run()).not.toThrow();
+		expect(db.pragma("user_version", { simple: true })).toBe(4);
 	});
 });

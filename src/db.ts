@@ -165,6 +165,59 @@ DROP TABLE instances;
 ALTER TABLE instances_new RENAME TO instances;
 DROP TABLE tautulli_guid_cache;
 `,
+	// 4: Per-season cleanup: "delete_season" rules and season approvals.
+	`
+CREATE TABLE rules_new (
+	id TEXT PRIMARY KEY,
+	name TEXT NOT NULL,
+	enabled INTEGER NOT NULL DEFAULT 1,
+	priority INTEGER NOT NULL DEFAULT 0,
+	mode TEXT NOT NULL DEFAULT 'cleanup' CHECK (mode IN ('cleanup','retention')),
+	action TEXT NOT NULL DEFAULT 'delete' CHECK (action IN ('delete','unmonitor','delete_files','delete_season')),
+	expression TEXT NOT NULL,
+	service_filter TEXT,
+	instance_filter TEXT,
+	exclude_tags TEXT,
+	exclude_titles TEXT,
+	use_global_rejection_memory INTEGER NOT NULL DEFAULT 1,
+	rejection_memory_days INTEGER DEFAULT 0,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
+INSERT INTO rules_new SELECT * FROM rules;
+DROP TABLE rules;
+ALTER TABLE rules_new RENAME TO rules;
+
+CREATE TABLE approvals_new (
+	id TEXT PRIMARY KEY,
+	instance_id TEXT NOT NULL,
+	arr_item_id INTEGER NOT NULL,
+	item_type TEXT NOT NULL CHECK (item_type IN ('movie','series','season')),
+	title TEXT NOT NULL,
+	year INTEGER,
+	size_on_disk INTEGER NOT NULL DEFAULT 0,
+	rule_id TEXT NOT NULL,
+	rule_name TEXT NOT NULL,
+	reason TEXT NOT NULL,
+	action TEXT NOT NULL,
+	status TEXT NOT NULL DEFAULT 'pending'
+		CHECK (status IN ('pending','approved','retry_pending','rejected','executing','retry_executing','executed','expired','blocked')),
+	execution_token TEXT,
+	attempt_count INTEGER NOT NULL DEFAULT 0,
+	safety_snapshot TEXT NOT NULL,
+	last_error TEXT,
+	reviewed_at TEXT,
+	executed_at TEXT,
+	expires_at TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	season_number INTEGER
+);
+INSERT INTO approvals_new SELECT *, NULL FROM approvals;
+DROP TABLE approvals;
+ALTER TABLE approvals_new RENAME TO approvals;
+CREATE INDEX approvals_status ON approvals (status);
+CREATE INDEX approvals_target ON approvals (instance_id, arr_item_id, item_type);
+`,
 ];
 
 export function openDb(path: string): Db {

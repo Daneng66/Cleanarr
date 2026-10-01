@@ -185,10 +185,10 @@ describe("content rating", () => {
 		expect(ev({ type: "certification", params: { operator: "excludes_all", ratings: ["R"] } }, item({ certification: "PG" })).state).toBe("true");
 		expect(ev({ type: "certification", params: { operator: "includes_any", ratings: ["G"] } }, item({ certification: undefined })).state).toBe("unknown");
 	});
-	it("suitable_for_kids understands children's ratings from other countries, never PG-13/12/A", () => {
+	it("suitable_for_kids understands children's ratings from other countries, including 12s, never PG-13/A", () => {
 		const k = (cert: string) => ev({ type: "certification", params: { operator: "suitable_for_kids" } }, item({ certification: cert })).state;
-		for (const c of ["G", "PG", "U", "FSK 6", "6", "AL", "TV-Y7", "tv-g", "Btl", "L"]) expect(k(c), c).toBe("true");
-		for (const c of ["PG-13", "12", "12A", "A", "R", "15", "TV-PG", "TV-MA", "FSK 16"]) expect(k(c), c).toBe("false");
+		for (const c of ["G", "PG", "U", "FSK 6", "6", "AL", "TV-Y7", "tv-g", "Btl", "L", "12", "12A", "12a", "12+", "-12", "FSK 12"]) expect(k(c), c).toBe("true");
+		for (const c of ["PG-13", "A", "R", "15", "TV-PG", "TV-MA", "FSK 16", "-16", "MA15+"]) expect(k(c), c).toBe("false");
 		expect(() => parseExpression({ type: "certification", params: { operator: "includes_any" } })).toThrow();
 	});
 	it("kids template: a children's rating protects, PG-13 and R do not, no rating protects as unknown", () => {

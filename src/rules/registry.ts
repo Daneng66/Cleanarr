@@ -25,6 +25,8 @@ export interface FieldMeta {
 	options?: string[];
 	optional?: boolean;
 	placeholder?: string;
+	/** "requesters": the editor offers Seerr users to pick from instead of free text. */
+	source?: "requesters";
 	/** Operator values that make this field irrelevant; the editor hides it and sends nothing for it. */
 	hideFor?: string[];
 }
@@ -51,7 +53,8 @@ const inList = (value: string | null, list: string[]) => value !== null && list.
 /**
  * Ratings that mean "fine for children" in the country Radarr/Sonarr reports them for. Matched without knowing the
  * country, so a value that is a kids' rating anywhere counts: for a protect rule that errs toward keeping more.
- * Deliberately absent: "A" (all ages in Spain, adults-only in India), "12", "13", PG-13, TV-PG.
+ * 12-and-over ratings count as children's (owner's choice), in every spelling seen: 12, 12A, 12+, -12, FSK 12.
+ * Deliberately absent: "A" (all ages in Spain, adults-only in India), "13", PG-13, TV-PG.
  */
 export const KIDS_RATINGS_BY_COUNTRY: Record<string, string[]> = {
 	US: ["G", "PG", "TV-Y", "TV-Y7", "TV-Y7-FV", "TV-G"],
@@ -75,6 +78,7 @@ export const KIDS_RATINGS_BY_COUNTRY: Record<string, string[]> = {
 	JP: ["G"],
 	KR: ["ALL", "All"],
 	IN: ["U"],
+	"12": ["12", "12A", "12+", "-12", "FSK 12", "12PG"],
 };
 const KIDS_RATINGS = new Set(Object.values(KIDS_RATINGS_BY_COUNTRY).flat().map((r) => r.toLowerCase()));
 const gb = (bytes: number) => `${(bytes / 1024 ** 3).toFixed(1)} GB`;
@@ -530,7 +534,7 @@ const defs: RuleTypeDef[] = [
 		needs: "seerr",
 		fields: [
 			{ name: "operator", label: "Operator", kind: "select", options: ["any_of", "none_of"] },
-			{ name: "users", label: "Users", kind: "list" },
+			{ name: "users", label: "Users", kind: "list", source: "requesters" },
 		],
 		schema: z.object({ operator: z.enum(["any_of", "none_of"]), users: strList }),
 		evaluate(item, p, ctx) {
@@ -599,6 +603,39 @@ const defs: RuleTypeDef[] = [
 			if (!names.length) return U("Requester has no name to match against watch history");
 			const watched = w.watchedBy.some((u) => inList(u, names));
 			return check(p.operator === "requester_watched" ? watched : !watched, p.operator === "requester_watched" ? "Requester has watched it" : "Requester has not watched it");
+		},
+	},
+	{
+		type: "season_requester_watched",
+		label: "Requester watched the whole season",
+		group: "Requests",
+		description:
+			"Seasons only (use the \"Delete season\" action): the person who requested the season in Seerr has watched every episode of it. Seasons still airing never match. Optionally limit to particular requesters.",
+		needs: "watch+seerr",
+		fields: [{ name: "users", label: "Only these requesters", kind: "list", optional: true, source: "requesters", placeholder: "Leave empty for any requester" }],
+		schema: z.object({ users: z.array(z.string().min(1)).optional() }),
+		evaluate(item, p, ctx) {
+			if (!item.season) return F("Only applies to seasons");
+			const label = `Season ${item.season.number}`;
+			const reqs = seerrOf(item, ctx);
+			if (!reqs) return U("Seerr data unavailable");
+			const w = watchOf(item, ctx);
+			if (!w) return U("Watch history unavailable");
+			const mine = p.users?.length ? reqs.filter((r) => r.requesters.some((n) => inList(n, p.users))) : reqs;
+			if (!mine.length) return F(p.users?.length ? `${label} was not requested by ${p.users.join("/")}` : `${label} was not requested`);
+			const names = mine.flatMap((r) => r.requesters);
+			if (!names.length) return U("Requester has no name to match against watch history");
+			const eps = item.season.episodes;
+			if (!eps.length) return U(`${label} episode list unavailable`);
+			if (eps.some((e) => !e.airDate || e.airDate > ctx.now)) return F(`${label} is still airing`);
+			let best = { user: "", seen: 0 };
+			for (const [user, seen] of w.episodesByUser ?? []) {
+				if (!inList(user, names)) continue;
+				const n = eps.filter((e) => seen.has(e.number)).length;
+				if (n > best.seen) best = { user, seen: n };
+			}
+			if (best.seen === eps.length) return T(`${label} fully watched by requester ${best.user} (${eps.length} episodes)`);
+			return F(`Requester has watched ${best.seen} of ${eps.length} episodes of ${label.toLowerCase()}`);
 		},
 	},
 ];

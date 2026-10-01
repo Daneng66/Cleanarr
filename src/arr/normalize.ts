@@ -9,6 +9,13 @@ const date = (v: unknown): Date | null => {
 	return Number.isNaN(d.getTime()) ? null : d;
 };
 
+/** Public poster URL from an *arr `images` array. TMDb posters are fetched at grid size rather than original. */
+export function posterOf(images: unknown): string | null {
+	const p = Array.isArray(images) ? images.find((i) => i?.coverType === "poster") : null;
+	const url = str(p?.remoteUrl);
+	return url ? url.replace("image.tmdb.org/t/p/original/", "image.tmdb.org/t/p/w342/") : null;
+}
+
 export function normalizeFile(raw: RawFile): FileInfo {
 	const media = raw.mediaInfo ?? {};
 	let resolution = num(raw.quality?.quality?.resolution);
@@ -91,5 +98,37 @@ export function normalizeItem(
 		imdbId: str(raw.imdbId),
 		files,
 		fileCount,
+		poster: posterOf(raw.images),
 	};
+}
+
+/**
+ * Splits a normalized series into one item per season that has files on disk. Each season item
+ * keeps the series' identity and metadata (so tags, titles and filters apply unchanged) with
+ * that season's size, files and episode list.
+ */
+export function seasonItems(series: LibraryItem, raw: RawItem, episodes: RawItem[], episodeFiles?: RawFile[]): LibraryItem[] {
+	const out: LibraryItem[] = [];
+	for (const s of Array.isArray(raw.seasons) ? raw.seasons : []) {
+		const n = num(s.seasonNumber);
+		const fileCount = num(s.statistics?.episodeFileCount) ?? 0;
+		if (n === null || fileCount === 0) continue;
+		out.push({
+			...series,
+			kind: "season",
+			monitored: s.monitored === true,
+			hasFile: true,
+			sizeOnDisk: num(s.statistics?.sizeOnDisk) ?? 0,
+			fileCount,
+			poster: posterOf(s.images) ?? series.poster,
+			files: episodeFiles ? episodeFiles.filter((f) => f.seasonNumber === n).map(normalizeFile) : null,
+			season: {
+				number: n,
+				episodes: episodes
+					.filter((e) => e.seasonNumber === n && num(e.episodeNumber) !== null)
+					.map((e) => ({ number: e.episodeNumber as number, airDate: date(e.airDateUtc), hasFile: e.hasFile === true })),
+			},
+		});
+	}
+	return out;
 }

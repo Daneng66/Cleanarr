@@ -1,7 +1,8 @@
 export type Service = "sonarr" | "radarr";
 export type InstanceType = Service | "plex" | "seerr";
-export type ItemKind = "movie" | "series";
-export type CleanupAction = "delete" | "unmonitor" | "delete_files";
+export type ItemKind = "movie" | "series" | "season";
+/** delete_season: delete one season's episode files and unmonitor that season. Only rules with it see season items. */
+export type CleanupAction = "delete" | "unmonitor" | "delete_files" | "delete_season";
 export type RuleMode = "cleanup" | "retention";
 export type Trigger = "scheduled" | "manual" | "approval" | "retry";
 
@@ -31,7 +32,13 @@ export interface FileInfo {
 	languages: string[];
 }
 
-/** Service-neutral view of a Radarr movie or Sonarr series. */
+export interface SeasonInfo {
+	number: number;
+	/** Every episode Sonarr lists for the season, aired or not. */
+	episodes: Array<{ number: number; airDate: Date | null; hasFile: boolean }>;
+}
+
+/** Service-neutral view of a Radarr movie, Sonarr series, or one season of a series (kind "season", arrId = series id). */
 export interface LibraryItem {
 	instanceId: string;
 	service: Service;
@@ -61,12 +68,18 @@ export interface LibraryItem {
 	/** null = not loaded; file-metadata rules evaluate to "unknown" rather than guessing. */
 	files: FileInfo[] | null;
 	fileCount: number;
+	/** Public poster image URL (TMDb/TVDB) as Sonarr/Radarr report it; null when there is none. */
+	poster: string | null;
+	/** Set only on season items. */
+	season?: SeasonInfo;
 }
 
 export interface WatchInfo {
 	lastWatchedAt: Date | null;
 	watchCount: number;
 	watchedBy: string[];
+	/** Season items only: episode numbers of that season each user has watched. */
+	episodesByUser?: Map<string, Set<number>>;
 }
 
 export interface WatchData {

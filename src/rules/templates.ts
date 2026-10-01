@@ -38,6 +38,15 @@ export const RULE_TEMPLATES: RuleTemplate[] = [
 		expression: { op: "and", of: [{ type: "seerr_requester_watched", params: { operator: "requester_watched" } }, { type: "age", params: { operator: "older_than", days: 60 } }] },
 	},
 	{
+		id: "requester-season-done",
+		title: "Requester finished the season",
+		description: "The person who requested a season in Seerr has watched every episode of it. Deletes that season's files and unmonitors it; the rest of the show stays. Seasons still airing are left alone.",
+		mode: "cleanup",
+		action: "delete_season",
+		expression: { type: "season_requester_watched", params: {} },
+		serviceFilter: ["sonarr"],
+	},
+	{
 		id: "low-rated",
 		title: "Low rated and unwatched",
 		description: "Rated below 5/10, never played, and added more than 3 months ago.",
@@ -90,7 +99,7 @@ export const RULE_TEMPLATES: RuleTemplate[] = [
 	{
 		id: "protect-kids",
 		title: "Protect films for kids",
-		description: "Never touch films with a children's rating: G, PG, U, FSK 6 and the equivalents in whichever country Radarr uses. Films with no rating count as unknown, so they're protected too until they have one.",
+		description: "Never touch films with a children's rating: G, PG, U, 12, 12A, FSK 6 and the equivalents in whichever country Radarr uses. Films with no rating count as unknown, so they're protected too until they have one.",
 		mode: "retention",
 		action: "delete",
 		serviceFilter: ["radarr"],
@@ -99,7 +108,7 @@ export const RULE_TEMPLATES: RuleTemplate[] = [
 	{
 		id: "protect-kids-shows",
 		title: "Protect shows for kids",
-		description: "Never touch series with a children's rating: TV-Y, TV-Y7, TV-G or the local equivalent. Shows with no rating count as unknown, so they're protected too until they have one.",
+		description: "Never touch series with a children's rating: TV-Y, TV-Y7, TV-G, 12 or the local equivalent. Shows with no rating count as unknown, so they're protected too until they have one.",
 		mode: "retention",
 		action: "delete",
 		serviceFilter: ["sonarr"],

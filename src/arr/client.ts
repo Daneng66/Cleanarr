@@ -22,6 +22,10 @@ export interface ArrApi {
 	deleteItem(id: number, opts: { deleteFiles: boolean }): Promise<void>;
 	unmonitor(id: number): Promise<void>;
 	deleteFiles(item: RawItem): Promise<void>;
+	/** Sonarr only: every episode of a series (aired or not). */
+	episodes(seriesId: number): Promise<RawItem[]>;
+	/** Sonarr only: delete one season's episode files and unmonitor that season. */
+	deleteSeason(seriesId: number, season: number): Promise<void>;
 }
 
 // biome-ignore lint/suspicious/noExplicitAny: upstream payloads are loosely typed and normalised in normalize.ts
@@ -80,6 +84,16 @@ export function createArrClient(
 				next.seasons = current.seasons.map((s: RawItem) => ({ ...s, monitored: false }));
 			}
 			await call("PUT", `/${root}/${id}`, next);
+		},
+		episodes: (seriesId) => (service === "sonarr" ? call("GET", `/episode?seriesId=${seriesId}`) : Promise.resolve([])),
+		async deleteSeason(seriesId, season) {
+			// Unmonitor first so Sonarr doesn't grab the episodes again the moment their files go.
+			const current = await call<RawItem>("GET", `/series/${seriesId}`);
+			const seasons = Array.isArray(current.seasons) ? current.seasons.map((s: RawItem) => (s.seasonNumber === season ? { ...s, monitored: false } : s)) : current.seasons;
+			await call("PUT", `/series/${seriesId}`, { ...current, seasons });
+			const files = await call<RawFile[]>("GET", `/episodefile?seriesId=${seriesId}`);
+			const ids = files.filter((f) => f.seasonNumber === season).map((f) => f.id).filter((id): id is number => typeof id === "number");
+			if (ids.length) await call("DELETE", "/episodefile/bulk", { episodeFileIds: ids });
 		},
 		async deleteFiles(item) {
 			if (service === "radarr") {

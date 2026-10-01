@@ -62,7 +62,7 @@ function state(s, label) {
 	const [mark, text, tone] = STATES[s] || ["loaded", String(s).replaceAll("_", " ")];
 	return h("span", { class: `state ${tone || mark}` }, icon(mark), label ?? text);
 }
-const actionTag = (a) => h("span", { class: `tag ${a}` }, { delete: "Delete", unmonitor: "Unmonitor", delete_files: "Delete files" }[a] || a);
+const actionTag = (a) => h("span", { class: `tag ${a}` }, { delete: "Delete", unmonitor: "Unmonitor", delete_files: "Delete files", delete_season: "Delete season" }[a] || a);
 const protectTag = () => h("span", { class: "tag protect" }, "Protect");
 
 // ── API ────────────────────────────────────────────────────────────────────
@@ -129,7 +129,9 @@ function ago(s) {
 }
 const timeEl = (s) => h("time", { dateTime: s || "", title: when(s) }, ago(s));
 const plural = (n, one, many = one + "s") => `${n.toLocaleString()} ${n === 1 ? one : many}`;
-const kindLabel = (k) => ({ movie: "Movie", series: "Series" }[k] || k);
+const kindLabel = (k) => ({ movie: "Movie", series: "Series", season: "Season" }[k] || k);
+// Season items carry their series' title; the season number tells them apart.
+const nameOf = (x) => (x.seasonNumber != null ? `${x.title} · Season ${x.seasonNumber}` : x.title);
 const frees = (x) => x.action !== "unmonitor";
 const sum = (rows) => rows.filter(frees).reduce((n, r) => n + (r.sizeOnDisk || 0), 0);
 const uid = () => `f${Math.random().toString(36).slice(2, 9)}`;
@@ -147,7 +149,7 @@ async function route() {
 	if (!routes[current]) current = "dashboard";
 	document.title = `${titles[current]} · Cleanarr`;
 	paintNav();
-	view.replaceChildren(h("div", { "aria-busy": "true" }, h("div", { class: "skeleton h" }), h("div", { class: "skeleton", style: "width:60%" }), h("div", { class: "skeleton", style: "width:40%" })));
+	view.replaceChildren(current === "dashboard" ? dashboardSkeleton() : h("div", { "aria-busy": "true" }, h("div", { class: "skeleton h" }), h("div", { class: "skeleton", style: "width:60%" }), h("div", { class: "skeleton", style: "width:40%" })));
 	try { const el = await routes[current](); if (seq === routeSeq) view.replaceChildren(el); }
 	catch (e) { if (seq === routeSeq) view.replaceChildren(h("div", { class: "panel" }, empty("Couldn't load this page", e.message, h("button", { type: "button", onclick: route }, icon("refresh"), "Try again")))); }
 	refreshMode();
@@ -179,20 +181,20 @@ async function renderDashboard() {
 	out.append(notices, h("div", { class: "deck" }, main, slot));
 
 	if (!libs.length) {
-		main.append(readout(null, "Connect your library", "Add Sonarr or Radarr and Cleanarr lays your library out here, sized by space on disk."),
-			magazineState("empty", "No library connected", "Each title becomes a cartridge sized by its space on disk.", h("button", { type: "button", onclick: () => { location.hash = "#/instances"; editInstance(); } }, icon("plus"), "Add Sonarr or Radarr")));
+		main.append(readout(null, "Connect your library", "Add Sonarr or Radarr and Cleanarr shows what your rules would remove here."),
+			posterState("empty", "No library connected", "Titles your rules would remove show up here as posters, largest first.", h("button", { type: "button", onclick: () => { location.hash = "#/instances"; editInstance(); } }, icon("plus"), "Add Sonarr or Radarr")));
 		return out;
 	}
 	if (!cleanupRules.length) {
 		main.append(readout(null, "No cleanup rules yet", "Write a rule and the preview shows exactly what it would pull, before anything changes."),
-			magazineState("empty", "Nothing to pull yet", "Rules decide which cartridges come off the shelf, e.g. added over a year ago and not watched in 180 days.", h("button", { type: "button", onclick: () => { location.hash = "#/rules"; editRule(); } }, icon("plus"), "Write a rule")),
+			posterState("empty", "Nothing to pull yet", "Rules decide which titles go, e.g. added over a year ago and not watched in 180 days.", h("button", { type: "button", onclick: () => { location.hash = "#/rules"; editRule(); } }, icon("plus"), "Write a rule")),
 			lastRunPanel(s.lastRun));
-		const lib = h("div"); main.prepend(lib);
-		api("/preview", { method: "POST" }).then((p) => lib.replaceChildren(libraryPanel(p.library))).catch(() => {});
+		const lib = h("div", {}, libraryPanel(null)); main.prepend(lib);
+		api("/preview", { method: "POST" }).then((p) => lib.replaceChildren(libraryPanel(p.library))).catch(() => lib.replaceChildren());
 		return out;
 	}
 
-	const head = h("div"), strip = h("div"), drivers = h("div"), warn = h("div"), lib = h("div");
+	const head = h("div"), strip = h("div"), drivers = h("div"), warn = h("div"), lib = h("div", {}, libraryPanel(null));
 	main.append(lib, head, strip, warn, drivers, lastRunPanel(s.lastRun));
 	const runBtn = h("button", { type: "button", class: "primary", onclick: (e) => guard(e.currentTarget, async () => {
 		const text = s.config.dryRun ? "This is a dry run: Cleanarr records what it would do and changes nothing." : s.config.requireApproval ? "Matches go to the mailslot. Nothing is removed until you approve it." : "Automatic mode is on: matching items are removed immediately, without approval.";
@@ -206,7 +208,7 @@ async function renderDashboard() {
 
 	async function load(force) {
 		if (force || !lastPreview || Date.now() - lastPreview.at > 5 * 60_000) {
-			if (!force) { head.replaceChildren(readout(null, "Reading your library…", "Evaluating every title against your rules. Preview never changes anything.", acts)); strip.replaceChildren(magazineState("loading")); }
+			if (!force) { head.replaceChildren(readoutSkeleton(acts)); strip.replaceChildren(posterSkeleton()); }
 			lastPreview = { at: Date.now(), data: await api("/preview", { method: "POST" }) };
 		}
 		paint(lastPreview.data);
@@ -220,11 +222,11 @@ async function renderDashboard() {
 		head.replaceChildren(readout(reclaim, "reclaimable by your rules", facts, acts, jump));
 		const skippedLink = h("a", { href: "#", onclick: (e) => { e.preventDefault(); openDialog({ kind: "wide", title: plural(p.skipped.length, "skipped title"), lede: "Missing evidence never matches a cleanup rule, so these were left alone.", body: [detailTable(p.skipped, false)], foot: [closeBtn()] }); } }, "See why");
 		warn.replaceChildren(...(p.warnings.length || p.skipped.length ? [h("div", { class: "notices", style: "margin-top:16px" }, ...p.warnings.map((w) => notice(w)), p.skipped.length ? notice(`${plural(p.skipped.length, "title")} skipped. `, skippedLink) : null)] : []));
-		strip.replaceChildren(flagged.length ? magazine(flagged) : magazineState("empty", "Shelf is clear", "No title matches a cleanup rule. Loosen a rule or check back after more is added.", h("a", { class: "btn", href: "#/rules" }, "Review rules")));
+		strip.replaceChildren(flagged.length ? posterGrid(flagged) : posterState("empty", "Shelf is clear", "No title matches a cleanup rule. Loosen a rule or check back after more is added.", h("a", { class: "btn", href: "#/rules" }, "Review rules")));
 		drivers.replaceChildren(flagged.length ? driversPanel(flagged) : "");
 		lib.replaceChildren(libraryPanel(p.library));
 	}
-	load(false).catch((e) => { head.replaceChildren(readout(null, "Preview failed", e.message, acts)); strip.replaceChildren(magazineState("empty", "Couldn't read the library", "Check that your instances are reachable, then refresh.", h("a", { class: "btn", href: "#/instances" }, "Check instances"))); });
+	load(false).catch((e) => { lib.replaceChildren(); head.replaceChildren(readout(null, "Preview failed", e.message, acts)); strip.replaceChildren(posterState("empty", "Couldn't read the library", "Check that your instances are reachable, then refresh.", h("a", { class: "btn", href: "#/instances" }, "Check instances"))); });
 	return out;
 }
 
@@ -232,54 +234,103 @@ function readout(n, title, text, acts, extra) {
 	const fig = n == null ? null : h("div", { class: "fig" }, h("span", { class: "n" }, bytesParts(n)[0]), h("span", { class: "u" }, bytesParts(n)[1]));
 	return h("div", { class: "readout" }, fig, h("div", { class: "what" }, h(n == null ? "h1" : "div", { class: "h" }, title), h("p", {}, text), extra || null), acts || null);
 }
-function magazineState(kind, title, text, action) {
-	const n = Math.max(10, Math.floor(Math.min(innerWidth, 1240) / 40));
-	return h("div", { class: `magazine ${kind}`, "aria-busy": kind === "loading" ? "true" : null },
-		h("div", { class: "rail", "aria-hidden": "true" }, Array.from({ length: n }, () => h("div", { class: "slot" }))),
-		title ? h("div", { class: "over" }, h("div", {}, h("div", { class: "h" }, title), h("p", {}, text), action || null)) : null,
-		h("div", { class: "floor" }), h("div", { class: "scale" }, h("span", {}, kind === "loading" ? "Loading cartridges…" : "Empty magazine")));
+// ── Loading skeletons: same boxes as the real dashboard, so nothing jumps when data lands. ──
+const sk = (cls) => h("span", { class: `sk ${cls}`, "aria-hidden": "true" });
+function readoutSkeleton(acts) {
+	return h("div", { class: "readout" }, h("div", { class: "fig" }, sk("fig")),
+		h("div", { class: "what" }, h("h1", { class: "h" }, "Reading your library…"), h("p", {}, "Evaluating every title against your rules. Preview never changes anything.")), acts || null);
+}
+function posterSkeleton() {
+	return h("div", { class: "posters", "aria-busy": "true" },
+		h("div", { class: "scale" }, sk("line short"), sk("line tiny")),
+		h("div", { class: "grid" }, Array.from({ length: 12 }, () => h("div", {}, sk("art"), sk("line"), sk("line short")))));
+}
+function dashboardSkeleton() {
+	return h("div", { "aria-busy": "true" }, h("div", { class: "deck" },
+		h("div", {}, libraryPanel(null), readoutSkeleton(), posterSkeleton()),
+		h("aside", { class: "panel" }, h("div", { class: "panel-head" }, sk("line short")), h("div", { class: "panel-body" }, sk("block")))));
+}
+function posterState(kind, title, text, action) {
+	return h("div", { class: `posters state ${kind}` },
+		h("div", { class: "grid", "aria-hidden": "true" }, Array.from({ length: 12 }, () => h("div", { class: "ph" }))),
+		title ? h("div", { class: "over" }, h("div", {}, h("div", { class: "h" }, title), h("p", {}, text), action || null)) : null);
 }
 // Stable 6-character barcode label per title, like an LTO cartridge's volser.
-function volser(d) { let x = 2166136261; for (const ch of `${d.instanceId}:${d.itemType}:${d.arrItemId}`) x = Math.imul(x ^ ch.charCodeAt(0), 16777619); return (x >>> 0).toString(36).toUpperCase().padStart(6, "0").slice(-6); }
+function volser(d) { let x = 2166136261; for (const ch of `${d.instanceId}:${d.itemType}:${d.arrItemId}${d.seasonNumber != null ? `:${d.seasonNumber}` : ""}`) x = Math.imul(x ^ ch.charCodeAt(0), 16777619); return (x >>> 0).toString(36).toUpperCase().padStart(6, "0").slice(-6); }
 const vol = (d) => h("span", { class: "vol", title: "Cartridge label" }, volser(d));
-function magazine(flagged) {
+const PAGE_POSTERS = 48;
+function posterGrid(flagged) {
 	const sorted = [...flagged].sort((a, b) => b.sizeOnDisk - a.sizeOnDisk);
-	const total = sorted.reduce((n, c) => n + c.sizeOnDisk, 0) || 1;
-	// Only spines wide enough to carry a readable label stand alone; the rest share one labelled block.
-	const railW = (innerWidth > 1020 ? Math.min(innerWidth, 1240) - 456 : innerWidth - 60) - 60;
-	const width = (c) => (c.sizeOnDisk / total) * railW;
-	const shown = sorted.filter((c) => width(c) >= 24).slice(0, 60), rest = sorted.slice(shown.length);
-	const cart = h("div");
-	const spines = [];
-	const select = (i) => { spines.forEach((s, j) => { s.classList.toggle("sel", i === j); s.setAttribute("aria-pressed", String(i === j)); }); cart.replaceChildren(cartLabel(shown[i])); };
-	shown.forEach((c, i) => {
-		spines.push(h("button", { type: "button", class: `spine ${c.itemType === "series" ? "series" : ""} ${frees(c) ? "" : "keep"} ${width(c) >= 52 ? "wide" : ""}`, "aria-label": `${c.title}, ${bytes(c.sizeOnDisk)}, ${c.ruleName}`, title: `${c.title} · ${bytes(c.sizeOnDisk)}`, style: `flex-grow:${c.sizeOnDisk / total}`, onclick: () => select(i) },
-			h("span", { class: "lab" }, h("span", { class: "t" }, c.title), h("span", { class: "bc" }), h("span", { class: "vol" }, volser(c)))));
-	});
-	const restBytes = rest.reduce((n, c) => n + c.sizeOnDisk, 0);
-	const more = rest.length ? h("button", { type: "button", class: "spine more", "aria-label": `${rest.length} smaller titles, ${bytes(restBytes)}`, title: `${rest.length} smaller titles · ${bytes(restBytes)}`, style: `flex-grow:${restBytes / total}`, onclick: () => openDialog({ kind: "wide", title: plural(rest.length, "smaller title"), lede: `${bytes(restBytes)} together.`, body: [detailTable(rest, true)], foot: [closeBtn()] }) },
-		h("span", { class: "lab" }, h("span", { class: "t" }, `+${rest.length} smaller`), h("span", { class: "bc" }))) : null;
-	const rail = h("div", { class: "rail", role: "group", "aria-label": "Flagged titles, sized by space on disk", onkeydown: (e) => {
-		const i = spines.indexOf(document.activeElement); if (i < 0) return;
-		const j = { ArrowRight: i + 1, ArrowLeft: i - 1, Home: 0, End: spines.length - 1 }[e.key];
-		if (j == null || !spines[j]) return; e.preventDefault(); spines[j].focus(); select(j);
-	} }, spines, more);
-	const keepOnly = flagged.filter((c) => !frees(c)).length;
-	const el = h("div", {},
-		h("div", { class: "magazine" }, rail, h("div", { class: "floor" }), h("div", { class: "scale" }, h("span", {}, `${plural(flagged.length, "cartridge")} · largest first`), h("span", {}, keepOnly ? `${bytes(total)} flagged · ${bytes(sum(flagged))} frees space` : `${bytes(total)} flagged`))),
-		h("div", { class: "legend" }, h("span", {}, h("i"), "Movies"), h("span", {}, h("i", { class: "series" }), "Series"), keepOnly ? h("span", {}, h("i", { class: "keep" }), `${keepOnly} unmonitor only (frees no space)`) : null, h("span", { class: "faint" }, "Width is space on disk")),
-		cart);
-	if (shown.length) select(0);
+	const grid = h("div", { class: "grid", role: "list", "aria-label": "Flagged titles, largest first" });
+	const more = h("button", { type: "button", class: "more", onclick: () => paint(sorted.length) });
+	const paint = (n) => {
+		grid.replaceChildren(...sorted.slice(0, n).map(posterCard));
+		more.hidden = n >= sorted.length;
+		more.textContent = `Show all ${sorted.length}`;
+	};
+	paint(PAGE_POSTERS);
+	const total = sum(flagged);
+	return h("div", { class: "posters" },
+		h("div", { class: "scale" }, h("span", {}, `${plural(flagged.length, "title")} · largest first`), h("span", {}, `${bytes(total)} frees space`)),
+		grid, more);
+}
+function posterCard(c) {
+	const art = c.poster
+		? h("img", { src: c.poster, alt: "", loading: "lazy", decoding: "async", onerror: (e) => e.target.replaceWith(h("span", { class: "noart" }, c.title)) })
+		: h("span", { class: "noart" }, c.title);
+	return h("div", { role: "listitem" }, h("button", { type: "button", class: `poster ${frees(c) ? "" : "keep"}`, "aria-label": `${nameOf(c)}, ${bytes(c.sizeOnDisk)}, ${c.ruleName}`, onclick: () => openDialog({ kind: "wide", title: nameOf(c), body: [titleDetail(c)], foot: [closeBtn()], onClose: () => dialog.close() }) },
+		h("span", { class: "art" }, art, c.seasonNumber != null ? h("span", { class: "badge" }, `S${c.seasonNumber}`) : null, h("span", { class: "size" }, bytes(c.sizeOnDisk))),
+		h("span", { class: "cap" }, h("span", { class: "t" }, c.title), h("span", { class: "m" }, c.ruleName))));
+}
+function titleDetail(c) {
+	const why = h("div", { class: "x", hidden: true });
+	const [n, u] = bytesParts(c.sizeOnDisk);
+	const art = c.poster ? h("img", { src: c.poster, alt: "", class: "thumb", onerror: (e) => e.target.replaceWith(h("div", { class: "thumb noart" }, c.title)) }) : h("div", { class: "thumb noart" }, c.title);
+	return h("div", { class: "detail" }, art,
+		h("div", { class: "main" },
+			h("div", { class: "fig" }, h("span", { class: "n" }, n), h("span", { class: "u" }, u), actionTag(c.action)),
+			impactBlock(c),
+			h("dl", { class: "basis" },
+				h("dt", {}, "Rated"), h("dd", {}, c.certification ? h("span", { class: "cert" }, c.certification) : h("span", { class: "faint" }, "Not rated")),
+				h("dt", {}, "Rule"), h("dd", {}, c.ruleName), h("dt", {}, "Matched"), h("dd", {}, plainReason(c.reason))),
+			h("div", { class: "acts" }, whyButton(c, why))),
+		why);
+}
+// Evaluation reasons for AND/OR rules arrive wrapped in one pair of brackets; drop it for reading.
+function plainReason(r) {
+	if (!r.startsWith("(") || !r.endsWith(")")) return r;
+	let depth = 0;
+	for (let i = 0; i < r.length - 1; i++) { depth += r[i] === "(" ? 1 : r[i] === ")" ? -1 : 0; if (depth === 0) return r; }
+	return r.slice(1, -1);
+}
+/** What the action will do to this title, stated plainly. Series and seasons count their episode files from Sonarr. */
+function impactBlock(c) {
+	const destroys = frees(c);
+	const el = h("div", { class: `impact ${destroys ? "destroys" : ""}`, role: "status" });
+	const files = (k) => (k == null ? "its episode files" : plural(k, "episode file"));
+	const say = (k, seasons) => {
+		const where = seasons?.length === 1 && c.seasonNumber == null ? ` in ${seasonName(seasons[0].number)}` : "";
+		if (c.itemType === "movie") return { delete: "Removes the movie from Radarr and deletes its file.", delete_files: "Deletes the file. The movie stays in Radarr.", unmonitor: "Radarr stops monitoring it. The file stays on disk." }[c.action];
+		return {
+			delete_season: `Deletes ${files(k)} and stops monitoring ${seasonName(c.seasonNumber)}. The rest of the show stays.`,
+			delete: `Removes the series from Sonarr and deletes ${files(k)}${where}.`,
+			delete_files: `Deletes ${files(k)}${where}. The series stays in Sonarr.`,
+			unmonitor: `Sonarr stops monitoring it. ${k == null ? "Its episode files stay" : `${plural(k, "episode file")} stay`} on disk.`,
+		}[c.action];
+	};
+	if (c.itemType === "movie") return el.append(h("p", {}, say())), el;
+	el.append(h("p", {}, say()), h("div", { class: "rows" }, sk("line short")));
+	const q = c.seasonNumber != null ? `?season=${c.seasonNumber}` : "";
+	api(`/series/${encodeURIComponent(c.instanceId)}/${c.arrItemId}/episodes${q}`).then((seasons) => {
+		const k = seasons.reduce((t, s) => t + s.episodes.length, 0);
+		const rows = seasons.length > 1 && c.action !== "unmonitor"
+			? h("div", { class: "rows" }, seasons.map((s) => h("div", {}, h("span", {}, seasonName(s.number)), h("span", {}, plural(s.episodes.length, "episode")), h("span", {}, bytes(s.size)))))
+			: "";
+		el.replaceChildren(h("p", {}, say(k, seasons)), rows);
+	}).catch(() => el.replaceChildren(h("p", {}, say()), h("div", { class: "rows faint small" }, "Couldn't count episodes in Sonarr right now.")));
 	return el;
 }
-function cartLabel(c) {
-	const why = h("div", { class: "x", hidden: true });
-	return h("div", { class: "panel cart" },
-		h("div", { class: `mini ${c.itemType === "series" ? "series" : ""} ${frees(c) ? "" : "keep"}`, "aria-hidden": "true" }, h("span", { class: "lab" }, h("span", { class: "bc" }))),
-		h("div", { class: "title" }, c.title, state("flagged")),
-		h("div", { class: "facts" }, vol(c), h("span", {}, h("b", {}, bytes(c.sizeOnDisk))), h("span", {}, kindLabel(c.itemType)), h("span", {}, "Rule ", h("b", {}, c.ruleName)), actionTag(c.action), h("span", {}, c.reason)),
-		h("div", { class: "acts" }, whyButton(c, why)), why);
-}
+const seasonName = (n) => (n === 0 ? "Specials" : `Season ${n}`);
 function driversPanel(flagged) {
 	const by = new Map();
 	for (const c of flagged) { const r = by.get(c.ruleId) || { name: c.ruleName, action: c.action, n: 0, b: 0 }; r.n++; if (frees(c)) r.b += c.sizeOnDisk; by.set(c.ruleId, r); }
@@ -290,15 +341,15 @@ function driversPanel(flagged) {
 			h("div", { class: "bar", "aria-hidden": "true" }, h("span", { style: `width:${r.b ? Math.max((r.b / max) * 100, 1) : 0}%` })),
 			h("div", { class: "v" }, bytes(r.b), h("small", {}, plural(r.n, "title"))))))));
 }
+/** Library totals; `null` renders the same panel with placeholder values while the preview loads. */
 function libraryPanel(l) {
-	if (!l) return "";
-	const stat = (label, value, sub) => h("div", {}, h("div", { class: "k" }, label), h("div", { class: "n" }, value), sub ? h("small", {}, sub) : null);
-	return h("section", { style: "margin-bottom:28px" }, h("div", { class: "section-title" }, h("h2", { class: "grow" }, "Library")),
+	const stat = (label, value, sub) => h("div", {}, h("div", { class: "k" }, label), l ? h("div", { class: "n" }, value) : sk("val"), l ? h("small", {}, sub) : sk("line short"));
+	return h("section", { style: "margin-bottom:28px", "aria-busy": l ? null : "true" }, h("div", { class: "section-title" }, h("h2", { class: "grow" }, "Library")),
 		h("div", { class: "panel stats" },
-			stat("Total size", bytes(l.totalBytes), plural(l.movies + l.series, "title")),
-			stat("Movies", l.movies.toLocaleString(), bytes(l.movieBytes)),
-			stat("Series", l.series.toLocaleString(), `${plural(l.files, "episode")} · ${bytes(l.seriesBytes)}`),
-			stat("Missing files", l.missing.toLocaleString(), "no file on disk")));
+			stat("Total size", l && bytes(l.totalBytes), l && plural(l.movies + l.series, "title")),
+			stat("Movies", l?.movies.toLocaleString(), l && bytes(l.movieBytes)),
+			stat("Series", l?.series.toLocaleString(), l && `${plural(l.files, "episode")} · ${bytes(l.seriesBytes)}`),
+			stat("Missing files", l?.missing.toLocaleString(), "no file on disk")));
 }
 function lastRunPanel(r) {
 	if (!r) return h("section", { style: "margin-top:28px" }, h("div", { class: "panel lastrun" }, state("loaded", "No runs yet"), h("span", {}, "Run now, or turn on the schedule in ", h("a", { href: "#/settings" }, "Settings"), ".")));
@@ -311,19 +362,19 @@ function mailslot(pending, config) {
 	const list = h("ul", { class: "queue" });
 	const decide = (a, action, li) => async (e) => {
 		const btn = e.currentTarget;
-		if (action === "approve" && !(await ask({ title: `Remove “${a.title}” now?`, text: `${bytes(a.sizeOnDisk)} · ${a.ruleName}. Cleanarr re-checks it against live data first and blocks the removal if anything changed.`, action: "Approve and remove", danger: true }))) return;
+		if (action === "approve" && !(await ask({ title: `Remove “${nameOf(a)}” now?`, text: `${bytes(a.sizeOnDisk)} · ${a.ruleName}. Cleanarr re-checks it against live data first and blocks the removal if anything changed.`, action: "Approve and remove", danger: true }))) return;
 		await guard(btn, async () => {
 			const r = await api("/approvals/bulk", { method: "POST", body: { ids: [a.id], action } });
 			const bad = r.results.find((x) => !x.ok);
 			if (bad) throw new Error(bad.error);
-			toast(action === "approve" ? `Approved ${a.title}` : `Rejected ${a.title}`);
+			toast(action === "approve" ? `Approved ${nameOf(a)}` : `Rejected ${nameOf(a)}`);
 			li.classList.add("leaving"); lastPreview = null; setTimeout(route, 200);
 		});
 	};
 	for (const a of pending.slice(0, 6)) {
 		const li = h("li");
-		li.append(h("div", { class: "t", title: a.title }, a.title, a.year ? ` (${a.year})` : ""), h("div", { class: "m" }, vol(a), ` ${bytes(a.sizeOnDisk)} · ${a.ruleName}`),
-			h("div", { class: "a" }, iconBtn("x", `Reject ${a.title}`, decide(a, "reject", li)), iconBtn("check", `Approve ${a.title}`, decide(a, "approve", li), "danger")));
+		li.append(h("div", { class: "t", title: nameOf(a) }, nameOf(a), a.year ? ` (${a.year})` : ""), h("div", { class: "m" }, vol(a), ` ${bytes(a.sizeOnDisk)} · ${a.ruleName}`),
+			h("div", { class: "a" }, iconBtn("x", `Reject ${nameOf(a)}`, decide(a, "reject", li)), iconBtn("check", `Approve ${nameOf(a)}`, decide(a, "approve", li), "danger")));
 		list.append(li);
 	}
 	const body = has ? list
@@ -341,19 +392,19 @@ function detailTable(rows, withWhy) {
 	const body = h("tbody");
 	for (const d of rows) {
 		const x = h("div", { class: "x" }), xr = h("tr", { class: "xrow", hidden: true }, h("td", { colSpan: withWhy ? 6 : 5 }, x));
-		body.append(h("tr", {}, h("td", {}, d.title, h("div", { class: "sub" }, kindLabel(d.itemType), " · ", vol(d))), h("td", {}, d.ruleName, h("div", { class: "sub" }, actionTag(d.action))), h("td", { class: "small" }, d.reason), h("td", { class: "num mono" }, bytes(d.sizeOnDisk)),
+		body.append(h("tr", {}, h("td", {}, nameOf(d), h("div", { class: "sub" }, kindLabel(d.itemType), " · ", vol(d))), h("td", {}, d.ruleName, h("div", { class: "sub" }, actionTag(d.action))), h("td", { class: "small" }, d.reason), h("td", { class: "num mono" }, bytes(d.sizeOnDisk)),
 			h("td", {}, state(d.outcome), d.message ? h("div", { class: "sub" }, d.message) : null), withWhy ? h("td", { class: "num" }, whyButton(d, x, xr, "small")) : null), xr);
 	}
 	return h("div", { class: "table-wrap" }, h("table", {}, h("thead", {}, h("tr", {}, h("th", {}, "Title"), h("th", {}, "Rule"), h("th", {}, "Reason"), h("th", { class: "num" }, "Size"), h("th", {}, "Result"), withWhy ? h("th", {}) : null)), body));
 }
 /** "Why?" expands the per-rule, per-condition evaluation in place under the item (read-only, so no modal). */
 function whyButton(d, slot, wrap = slot, cls = "", iconOnly = false) {
-	const btn = h("button", { type: "button", class: cls, "aria-expanded": "false", "aria-label": `Why is ${d.title} flagged?`, onclick: () => guard(btn, async () => {
+	const btn = h("button", { type: "button", class: cls, "aria-expanded": "false", "aria-label": `Why is ${nameOf(d)} flagged?`, onclick: () => guard(btn, async () => {
 		const open = btn.getAttribute("aria-expanded") === "true";
 		btn.setAttribute("aria-expanded", String(!open));
 		if (open) { wrap.hidden = true; slot.replaceChildren(); return; }
 		wrap.hidden = false; slot.replaceChildren(h("div", { class: "skeleton", style: "width:50%" }));
-		try { slot.replaceChildren(explainBody(await api("/explain", { method: "POST", body: { instanceId: d.instanceId, arrItemId: d.arrItemId } }))); }
+		try { slot.replaceChildren(explainBody(await api("/explain", { method: "POST", body: { instanceId: d.instanceId, arrItemId: d.arrItemId, seasonNumber: d.seasonNumber ?? null } }))); }
 		catch (e) { slot.replaceChildren(badNotice(e.message)); }
 	}) }, icon("why"), iconOnly ? null : "Why?");
 	return btn;
@@ -363,7 +414,7 @@ function explainBody(e) {
 	const tree = (n) => { const [ic, cls] = mark[n.state] || mark.unknown; return h("li", {}, h("span", { class: cls, style: "font:inherit;white-space:normal" }, icon(ic), n.type ? h("span", { class: n.state === "true" ? "" : "muted" }, n.reason) : h("span", { class: "op" }, n.op.toUpperCase())), n.children ? h("ul", {}, n.children.map(tree)) : null); };
 	const verdict = (r) => !r.inScope ? state("out_of_scope") : r.state === "true" ? (r.mode === "retention" ? state("protected", "Protects it") : state("matches")) : r.state === "false" ? state("no_match") : state("unknown");
 	return h("div", { class: "explain" },
-		h("div", { class: "itemfacts" }, h("span", {}, kindLabel(e.item.kind)), h("span", {}, h("b", {}, bytes(e.item.sizeOnDisk))), h("span", {}, e.item.monitored ? "Monitored" : "Unmonitored"), e.item.path ? h("span", { class: "mono" }, e.item.path) : null),
+		h("div", { class: "itemfacts" }, h("span", {}, e.item.seasonNumber != null ? `Season ${e.item.seasonNumber}` : kindLabel(e.item.kind)), h("span", {}, h("b", {}, bytes(e.item.sizeOnDisk))), h("span", {}, e.item.monitored ? "Monitored" : "Unmonitored"), e.item.path ? h("span", { class: "mono" }, e.item.path) : null),
 		e.warnings.length ? h("div", { class: "notices" }, e.warnings.map((w) => notice(w))) : null,
 		e.rules.map((r) => h("div", { class: "verdict" }, h("div", { class: "row" }, h("strong", {}, r.name), r.mode === "retention" ? protectTag() : actionTag(r.action), h("span", { class: "grow" }), verdict(r)), r.excludedBy ? h("div", { class: "help" }, r.excludedBy) : null, r.tree ? h("ul", { class: "tree" }, tree(r.tree)) : null)));
 }
@@ -420,7 +471,18 @@ function humanExpr(e) {
 }
 const isFlat = (e) => { const leaf = (n) => n.type || (n.op === "not" && n.of.type); return leaf(e) || ((e.op === "and" || e.op === "or") && e.of.every(leaf)); };
 
+// Seerr users, loaded when the rule editor opens; empty when Seerr isn't connected (fields fall back to free text).
+let requesters = [];
 function paramInput(f, value) {
+	// A rule saved with several names keeps the free-text box so none are lost.
+	if (f.source === "requesters" && requesters.length && !(Array.isArray(value) && value.length > 1)) {
+		const cur = Array.isArray(value) ? value[0] : undefined;
+		// Keep a saved name Seerr no longer lists, so editing a rule never silently drops it.
+		const names = cur && !requesters.some((n) => n.toLowerCase() === cur.toLowerCase()) ? [...requesters, cur] : requesters;
+		return h("select", { "data-f": f.name, "data-kind": "requester" },
+			f.optional ? h("option", { value: "" }, "Any requester") : null,
+			names.map((n) => h("option", { value: n, selected: !!cur && n.toLowerCase() === cur.toLowerCase() }, n)));
+	}
 	if (f.kind === "select") return h("select", { "data-f": f.name }, f.options.map((o) => h("option", { value: o, selected: o === value }, o.replaceAll("_", " "))));
 	if (f.kind === "list") return h("input", { "data-f": f.name, "data-kind": "list", placeholder: f.placeholder || "comma separated", value: Array.isArray(value) ? value.join(", ") : "" });
 	if (f.kind === "number") return h("input", { "data-f": f.name, "data-kind": "number", type: "number", step: "any", inputMode: "decimal", value: value ?? "" });
@@ -430,6 +492,7 @@ function readParams(el, fields) {
 	const p = {};
 	for (const f of fields) {
 		const i = el.querySelector(`[data-f="${f.name}"]`); if (!i || i.closest("[hidden]")) continue;
+		if (i.dataset.kind === "requester") { if (i.value) p[f.name] = [i.value]; continue; }
 		const v = i.value.trim();
 		if (f.kind === "number") { if (v !== "") p[f.name] = Number(v); } else if (f.kind === "list") { const l = v.split(",").map((s) => s.trim()).filter(Boolean); if (l.length) p[f.name] = l; } else if (v !== "") p[f.name] = v;
 	}
@@ -498,7 +561,7 @@ function segmented(label, options, value) {
 const friendlyIssue = (line) => line.replace(/^expression[.\w]*: /, "").replace(/^body: /, "").replace(/\$\((\w+)\)\.?(\w*)/, (_, t, f) => { const def = typeDef(t); return [def?.label || t, def?.fields.find((x) => x.name === f)?.label || f].filter(Boolean).join(" › "); });
 const DEFAULT_LEAF = { type: "age", params: { operator: "older_than", days: 365 } };
 async function editRule(rule, tpl) {
-	if (!ruleTypes.length) try { ruleTypes = await api("/rule-types"); } catch (e) { return fail(e); }
+	try { [ruleTypes, requesters] = await Promise.all([ruleTypes.length ? ruleTypes : api("/rule-types"), api("/requesters").catch(() => [])]); } catch (e) { return fail(e); }
 	const src = rule || (tpl && { name: tpl.title, mode: tpl.mode, action: tpl.action, expression: tpl.expression, serviceFilter: tpl.serviceFilter });
 	const exprIn = src?.expression;
 	const field = (label, input, help) => { input.id ||= uid(); return h("div", { class: "field" }, h("label", { class: "lbl", htmlFor: input.id }, label), input, help ? h("div", { class: "help" }, help) : null); };
@@ -509,7 +572,7 @@ async function editRule(rule, tpl) {
 	const nameField = field("Name", name); nameField.append(nameErr);
 	const mode = segmented("Rule type", [["cleanup", "Cleanup"], ["retention", "Protect"]], src?.mode || "cleanup");
 	const modeHelp = h("div", { class: "help" });
-	const action = h("select", {}, [["delete", "Delete: remove from library and delete files"], ["delete_files", "Delete files, keep in library"], ["unmonitor", "Unmonitor only (frees no space)"]].map(([v, l]) => h("option", { value: v, selected: v === (src?.action || "delete") }, l)));
+	const action = h("select", {}, [["delete", "Delete: remove from library and delete files"], ["delete_files", "Delete files, keep in library"], ["delete_season", "Delete season: one season's files, then unmonitor it (Sonarr)"], ["unmonitor", "Unmonitor only (frees no space)"]].map(([v, l]) => h("option", { value: v, selected: v === (src?.action || "delete") }, l)));
 	const actionField = field("Action", action);
 	const syncMode = () => { const protect = mode.value() === "retention"; actionField.hidden = protect; modeHelp.textContent = protect ? "Matching items are never touched by any cleanup rule." : "Matching items are flagged for the action below. The first matching cleanup rule wins."; };
 	mode.addEventListener("change", syncMode); syncMode();
@@ -621,7 +684,7 @@ async function renderApprovals() {
 	const act = (action, ids) => async (e) => {
 		const btn = e.currentTarget, chosenIds = ids || [...picked];
 		const chosen = rows.filter((a) => chosenIds.includes(a.id));
-		if (action === "approve" && !(await ask({ title: chosen.length === 1 ? `Remove “${chosen[0].title}” now?` : `Remove ${chosen.length} items now?`, text: `${bytes(sum(chosen))} will be reclaimed. Each item is re-checked against live data first and blocked if anything changed.`, action: chosen.length === 1 ? "Approve and remove" : `Approve ${chosen.length}`, danger: true }))) return;
+		if (action === "approve" && !(await ask({ title: chosen.length === 1 ? `Remove “${nameOf(chosen[0])}” now?` : `Remove ${chosen.length} items now?`, text: `${bytes(sum(chosen))} will be reclaimed. Each item is re-checked against live data first and blocked if anything changed.`, action: chosen.length === 1 ? "Approve and remove" : `Approve ${chosen.length}`, danger: true }))) return;
 		await guard(btn, async () => {
 			const r = await api("/approvals/bulk", { method: "POST", body: { ids: chosenIds, action } });
 			const bad = r.results.filter((x) => !x.ok);
@@ -639,16 +702,16 @@ async function renderApprovals() {
 	}
 	const list = h("ul", { class: "approvals" }, h("li", { class: "head" }, h("span", {}, all ? h("label", { class: "hit" }, all) : null), h("span", { class: "t" }, "Title"), h("span", { class: "why" }, "Rule and reason"), h("span", { class: "sz" }, "Size"), h("span", { class: "st" }, "Status"), h("span", { class: "a" })));
 	for (const a of rows) {
-		const box = actionable ? h("input", { type: "checkbox", "aria-label": `Select ${a.title}`, onchange: (e) => { e.target.checked ? picked.add(a.id) : picked.delete(a.id); paintBar(); } }) : null;
+		const box = actionable ? h("input", { type: "checkbox", "aria-label": `Select ${nameOf(a)}`, onchange: (e) => { e.target.checked ? picked.add(a.id) : picked.delete(a.id); paintBar(); } }) : null;
 		const x = h("div", { class: "x", hidden: true });
 		const meta = a.lastError || (actionable ? `Expires ${ago(a.expiresAt)}` : a.executedAt || a.reviewedAt ? ago(a.executedAt || a.reviewedAt) : null);
 		const li = h("li", {},
 			h("span", {}, box ? h("label", { class: "hit" }, box) : null),
-			h("div", { class: "t" }, a.title, a.year ? ` (${a.year})` : "", h("small", {}, vol(a), " · ", kindLabel(a.itemType), " · ", actionTag(a.action), h("span", { class: "sz-inline" }, ` · ${bytes(a.sizeOnDisk)}`)), h("small", { class: "why-inline" }, `${a.ruleName}: ${a.reason}`)),
+			h("div", { class: "t" }, nameOf(a), a.year ? ` (${a.year})` : "", h("small", {}, vol(a), " · ", kindLabel(a.itemType), " · ", actionTag(a.action), h("span", { class: "sz-inline" }, ` · ${bytes(a.sizeOnDisk)}`)), h("small", { class: "why-inline" }, `${a.ruleName}: ${a.reason}`)),
 			h("div", { class: "why" }, h("b", {}, a.ruleName), h("small", {}, a.reason)),
 			h("div", { class: "sz" }, bytes(a.sizeOnDisk)),
 			h("div", { class: "st" }, state(a.status), meta ? h("div", { class: "help", style: "margin-top:4px" }, meta) : null),
-			h("div", { class: "a" }, whyButton(a, x, x, "icon ghost", true), actionable ? [iconBtn("x", `Reject ${a.title}`, act("reject", [a.id])), iconBtn("check", `Approve ${a.title}`, act("approve", [a.id]), "danger")] : null));
+			h("div", { class: "a" }, whyButton(a, x, x, "icon ghost", true), actionable ? [iconBtn("x", `Reject ${nameOf(a)}`, act("reject", [a.id])), iconBtn("check", `Approve ${nameOf(a)}`, act("approve", [a.id]), "danger")] : null));
 		li.append(x);
 		lis.push({ li, a, box });
 		list.append(li);

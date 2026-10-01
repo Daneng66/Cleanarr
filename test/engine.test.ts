@@ -422,3 +422,81 @@ describe("preview library summary", () => {
 		expect(p.library).toEqual({ movies: 2, series: 1, files: 20, missing: 1, movieBytes: 10 * GB, seriesBytes: 40 * GB, totalBytes: 50 * GB });
 	});
 });
+
+describe("delete season", () => {
+	const aired = new Date(NOW.getTime() - 100 * DAY).toISOString();
+	const future = new Date(NOW.getTime() + 7 * DAY).toISOString();
+	const show = series(1, {
+		seasons: [
+			{ seasonNumber: 1, monitored: true, statistics: { sizeOnDisk: 20 * GB, episodeFileCount: 2 } },
+			{ seasonNumber: 2, monitored: true, statistics: { sizeOnDisk: 10 * GB, episodeFileCount: 1 } },
+			{ seasonNumber: 3, monitored: true, statistics: { sizeOnDisk: 10 * GB, episodeFileCount: 1 } },
+		],
+	});
+	const ep = (season: number, n: number, airDateUtc: string) => ({ seasonNumber: season, episodeNumber: n, airDateUtc, hasFile: true });
+	const req = (name: string, seasons: number[]) => ({ id: seasons[0]!, status: 5, createdAt: new Date(NOW.getTime() - 300 * DAY), updatedAt: NOW, is4k: false, requesters: [name], seasons });
+	const seen = (user: string, eps: number[]) => ({ lastWatchedAt: NOW, watchCount: eps.length, watchedBy: [user], episodesByUser: new Map([[user, new Set(eps)]]) });
+	const rule = (users?: string[]) => ({ type: "season_requester_watched", params: users ? { users } : {} });
+
+	function stack(seerr = { "series:3001": [req("Alice", [1, 2]), req("Bob", [3])] }) {
+		const s = setup({
+			sonarr: [show],
+			seerr,
+			// S1 fully watched by Alice; S2 still airing; S3 fully watched, but by Alice, not its requester Bob.
+			watch: { "season:3001:1": seen("Alice", [1, 2]), "season:3001:2": seen("Alice", [1]), "season:3001:3": seen("Alice", [1]) },
+		});
+		s.sonarrApi!.eps.set(1, [ep(1, 1, aired), ep(1, 2, aired), ep(2, 1, aired), ep(2, 2, future), ep(3, 1, aired)]);
+		return s;
+	}
+
+	it("flags only seasons the requester has fully watched and that have finished airing", async () => {
+		const s = stack();
+		s.rule("season done", rule(), { action: "delete_season" });
+		const p = await s.engine.preview();
+		expect(p.candidates.map((c) => [c.itemType, c.seasonNumber, c.sizeOnDisk])).toEqual([["season", 1, 20 * GB]]);
+		expect(p.candidates[0]!.reason).toMatch(/Season 1 fully watched by requester Alice/);
+		expect(p.evaluated).toBe(1); // seasons aren't counted as extra titles
+	});
+	it("limits to particular requesters", async () => {
+		const s = stack();
+		s.rule("bob's seasons", rule(["Bob"]), { action: "delete_season" });
+		expect((await s.engine.preview()).candidates).toEqual([]);
+	});
+	it("deletes the season through an approval, rechecking first", async () => {
+		const s = stack();
+		live(s, { requireApproval: true });
+		s.rule("season done", rule(), { action: "delete_season" });
+		await s.engine.run({ trigger: "manual" });
+		const [a] = s.store.approvals.list("pending");
+		expect([a!.itemType, a!.seasonNumber]).toEqual(["season", 1]);
+		// A second run must not propose the same season again.
+		await s.engine.run({ trigger: "manual" });
+		expect(s.store.approvals.list("pending")).toHaveLength(1);
+		const r = await s.engine.approve(a!.id, { actor: "me" });
+		expect(r.status).toBe("executed");
+		expect(s.sonarrApi!.calls).toEqual(["delete_season:1:1"]);
+	});
+	it("season rules never act on whole series, and series rules never act on seasons", async () => {
+		const s = stack();
+		live(s);
+		s.rule("old", old(100));
+		await s.engine.run({ trigger: "manual" });
+		expect(s.sonarrApi!.calls).toEqual(["delete:1:true"]);
+	});
+	it("lists episodes on disk by season, optionally one season", async () => {
+		const s = stack();
+		s.sonarrApi!.eps.set(1, [{ ...ep(1, 2, aired), episodeFileId: 12, title: "Two" }, { ...ep(1, 1, aired), episodeFileId: 11, title: "One" }, { ...ep(2, 1, aired), episodeFileId: 21 }, { ...ep(2, 2, future), hasFile: false }]);
+		s.sonarrApi!.files.set(1, [{ id: 11, size: 1 * GB }, { id: 12, size: 2 * GB }, { id: 21, size: 4 * GB }]);
+		const all = await s.engine.episodesOnDisk(s.sonarr!.id, 1);
+		expect(all.map((x) => [x.number, x.size, x.episodes.map((e) => e.number)])).toEqual([[1, 3 * GB, [1, 2]], [2, 4 * GB, [1]]]);
+		expect((await s.engine.episodesOnDisk(s.sonarr!.id, 1, 2)).map((x) => x.number)).toEqual([2]);
+	});
+	it("retention on the series protects its seasons", async () => {
+		const s = stack();
+		live(s);
+		s.rule("season done", rule(), { action: "delete_season" });
+		s.rule("keep monitored", { type: "monitored", params: {} }, { mode: "retention" });
+		await s.engine.run({ trigger: "manual" });
+		expect(s.sonarrApi!.calls).toEqual([]);
+	});
+});

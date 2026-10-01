@@ -15,6 +15,7 @@ export class FakeArr implements ArrApi {
 	failDelete = false;
 	items = new Map<number, RawItem>();
 	files = new Map<number, RawItem[]>();
+	eps = new Map<number, RawItem[]>();
 	constructor(readonly service: Service, items: RawItem[] = []) {
 		for (const i of items) this.items.set(i.id, i);
 	}
@@ -35,6 +36,8 @@ export class FakeArr implements ArrApi {
 	}
 	async unmonitor(id: number) { this.calls.push(`unmonitor:${id}`); const i = this.items.get(id); if (i) i.monitored = false; }
 	async deleteFiles(item: RawItem) { this.calls.push(`delete_files:${item.id}`); }
+	async episodes(id: number) { return structuredClone(this.eps.get(id) ?? []); }
+	async deleteSeason(id: number, season: number) { this.calls.push(`delete_season:${id}:${season}`); }
 }
 
 export function movie(id: number, over: RawItem = {}): RawItem {
@@ -78,14 +81,17 @@ export function setup(opts: { radarr?: RawItem[]; sonarr?: RawItem[]; watch?: Re
 			async load() {
 				if (opts.seerr === "fail" || !opts.seerr) throw new Error("seerr down");
 				const m = opts.seerr;
-				return { warnings: [], lookup: (item) => m[`${item.kind}:${item.tmdbId}`] ?? [] };
+				return {
+					warnings: [],
+					lookup: (item) => (m[`${item.kind === "season" ? "series" : item.kind}:${item.tmdbId}`] ?? []).filter((r) => !item.season || !r.seasons || r.seasons.includes(item.season.number)),
+				};
 			},
 		}),
 		watch: () => ({
 			async load() {
 				if (opts.watch === "fail" || !opts.watch) throw new Error("plex down");
 				const w = opts.watch;
-				return { warnings: [], lookup: (item) => (item.tmdbId !== null ? w[`${item.kind}:${item.tmdbId}`] : undefined) };
+				return { warnings: [], lookup: (item) => (item.tmdbId !== null ? w[`${item.kind}:${item.tmdbId}${item.season ? `:${item.season.number}` : ""}`] : undefined) };
 			},
 		}),
 	});

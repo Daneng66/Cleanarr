@@ -47,7 +47,7 @@ const ruleBase = z.object({
 	enabled: z.boolean().default(true),
 	priority: z.number().int().default(0),
 	mode: z.enum(["cleanup", "retention"]).default("cleanup"),
-	action: z.enum(["delete", "unmonitor", "delete_files"]).default("delete"),
+	action: z.enum(["delete", "unmonitor", "delete_files", "delete_season"]).default("delete"),
 	expression: z.unknown().superRefine((v, ctx) => {
 		try {
 			parseExpression(v);
@@ -68,4 +68,4 @@ export const ruleReorder = z.object({ ids: z.array(z.string()).min(1) });
 
 export const runRequest = z.object({ dryRun: z.boolean().optional() }).default({});
 export const bulkApproval = z.object({ ids: z.array(z.string()).min(1).max(100), action: z.enum(["approve", "reject"]) });
-export const explainRequest = z.object({ instanceId: z.string(), arrItemId: z.number().int() });
+export const explainRequest = z.object({ instanceId: z.string(), arrItemId: z.number().int(), seasonNumber: z.number().int().nullish() });

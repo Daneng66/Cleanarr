@@ -1,12 +1,13 @@
 import { randomUUID } from "node:crypto";
 import type { ArrApi } from "../arr/client.js";
-import { normalizeItem } from "../arr/normalize.js";
+import { normalizeItem, seasonItems } from "../arr/normalize.js";
 import { evaluateExpression, parseExpression, requirements, type EvalNode, type Expression } from "../rules/expression.js";
 import { passesFilters } from "../rules/filters.js";
 import type { EvalContext } from "../rules/registry.js";
 import type { ApprovalRow, SafetySnapshot, Store } from "../store.js";
 import type { SeerrProvider, SeerrRequest } from "../seerr/seerr.js";
 import type { WatchProvider } from "../watch/index.js";
+import { mergeEpisodes } from "../watch/plex.js";
 import type { CleanupAction, Candidate, ConfigRecord, Instance, LibraryItem, RuleRecord, Trigger, WatchInfo } from "../types.js";
 
 export interface Logger {
@@ -46,12 +47,16 @@ export interface RunDetail {
 	instanceId: string;
 	arrItemId: number;
 	itemType: string;
+	/** Season items only. */
+	seasonNumber?: number;
 	title: string;
 	ruleId: string;
 	ruleName: string;
 	action: CleanupAction;
 	reason: string;
 	sizeOnDisk: number;
+	poster?: string | null;
+	certification?: string | null;
 	outcome: Outcome;
 	message?: string;
 }
@@ -65,6 +70,9 @@ interface Snapshot {
 	ctx: EvalContext;
 }
 
+/** What a run has to load. `seasons`: some rule acts per season, so series are also split into season items. */
+type Needs = { files: boolean; watch: boolean; seerr: boolean; seasons: boolean };
+
 interface Plan {
 	candidates: Candidate[];
 	skipped: RunDetail[];
@@ -75,6 +83,7 @@ interface Plan {
 export function librarySummary(items: LibraryItem[]) {
 	const s = { movies: 0, series: 0, files: 0, missing: 0, movieBytes: 0, seriesBytes: 0, totalBytes: 0 };
 	for (const i of items) {
+		if (i.kind === "season") continue;
 		if (i.kind === "movie") (s.movies++, (s.movieBytes += i.sizeOnDisk));
 		else (s.series++, (s.seriesBytes += i.sizeOnDisk), (s.files += i.fileCount));
 		if (!i.hasFile) s.missing++;
@@ -117,7 +126,8 @@ export function createEngine(deps: EngineDeps) {
 			const hits = lookups.map((l) => l(item)).filter((x): x is WatchInfo => !!x);
 			if (!hits.length) return undefined;
 			const dates = hits.map((h) => h.lastWatchedAt).filter((d): d is Date => !!d).sort((a, b) => b.getTime() - a.getTime());
-			return { lastWatchedAt: dates[0] ?? null, watchCount: Math.max(...hits.map((h) => h.watchCount)), watchedBy: [...new Set(hits.flatMap((h) => h.watchedBy))] };
+			const episodesByUser = mergeEpisodes(hits.map((h) => h.episodesByUser));
+			return { lastWatchedAt: dates[0] ?? null, watchCount: Math.max(...hits.map((h) => h.watchCount)), watchedBy: [...new Set(hits.flatMap((h) => h.watchedBy))], ...(episodesByUser ? { episodesByUser } : {}) };
 		};
 	}
 
@@ -156,7 +166,7 @@ export function createEngine(deps: EngineDeps) {
 		return out;
 	}
 
-	async function loadSnapshot(needs: { files: boolean; watch: boolean; seerr: boolean }): Promise<Snapshot> {
+	async function loadSnapshot(needs: Needs): Promise<Snapshot> {
 		const instances = store.instances.list().filter((i) => i.enabled);
 		const snap: Snapshot = {
 			items: [],
@@ -176,20 +186,17 @@ export function createEngine(deps: EngineDeps) {
 					try {
 						const [raw, maps] = await Promise.all([api.list(), loadMaps(api)]);
 						let filesBySeries = new Map<number, any[]>();
-						if (needs.files && api.service === "sonarr") {
+						let episodesBySeries = new Map<number, any[]>();
+						if (api.service === "sonarr" && (needs.files || needs.seasons)) {
 							const withFiles = raw.filter((r) => (r.statistics?.episodeFileCount ?? 0) > 0);
-							const results = await mapLimit(withFiles, FILE_FETCH_CONCURRENCY, async (r) => [r.id, await api.episodeFiles(r.id)] as const);
-							filesBySeries = new Map(results);
+							if (needs.files) filesBySeries = new Map(await mapLimit(withFiles, FILE_FETCH_CONCURRENCY, async (r) => [r.id, await api.episodeFiles(r.id)] as const));
+							if (needs.seasons) episodesBySeries = new Map(await mapLimit(withFiles, FILE_FETCH_CONCURRENCY, async (r) => [r.id, await api.episodes(r.id)] as const));
 						}
 						for (const r of raw) {
-							snap.items.push(
-								normalizeItem(r, {
-									instanceId: inst.id,
-									service: api.service,
-									...maps,
-									episodeFiles: api.service === "sonarr" && needs.files ? (filesBySeries.get(r.id) ?? []) : undefined,
-								}),
-							);
+							const episodeFiles = api.service === "sonarr" && needs.files ? (filesBySeries.get(r.id) ?? []) : undefined;
+							const item = normalizeItem(r, { instanceId: inst.id, service: api.service, ...maps, episodeFiles });
+							snap.items.push(item);
+							if (needs.seasons && api.service === "sonarr") snap.items.push(...seasonItems(item, r, episodesBySeries.get(r.id) ?? [], episodeFiles));
 						}
 					} catch (e) {
 						snap.failedInstances.add(inst.id);
@@ -206,8 +213,8 @@ export function createEngine(deps: EngineDeps) {
 		return snap;
 	}
 
-	function activeRules(): { rules: Array<{ rule: RuleRecord; expr: Expression }>; needs: { files: boolean; watch: boolean; seerr: boolean }; warnings: string[] } {
-		const needs = { files: false, watch: false, seerr: false };
+	function activeRules(): { rules: Array<{ rule: RuleRecord; expr: Expression }>; needs: Needs; warnings: string[] } {
+		const needs: Needs = { files: false, watch: false, seerr: false, seasons: false };
 		const warnings: string[] = [];
 		const rules: Array<{ rule: RuleRecord; expr: Expression }> = [];
 		for (const rule of store.rules.list().filter((r) => r.enabled)) {
@@ -217,6 +224,7 @@ export function createEngine(deps: EngineDeps) {
 				needs.files ||= req.files;
 				needs.watch ||= req.watch;
 				needs.seerr ||= req.seerr;
+				needs.seasons ||= rule.mode === "cleanup" && rule.action === "delete_season";
 				rules.push({ rule, expr });
 			} catch (e) {
 				warnings.push(`Rule "${rule.name}" skipped: invalid expression (${(e as Error).message})`);
@@ -226,19 +234,22 @@ export function createEngine(deps: EngineDeps) {
 	}
 
 	// ── Planning ───────────────────────────────────────────────────────────
-	const targetKey = (i: { instanceId: string; kind?: string; itemType?: string; arrId?: number; arrItemId?: number }) =>
-		`${i.instanceId}:${i.kind ?? i.itemType}:${i.arrId ?? i.arrItemId}`;
+	const targetKey = (i: LibraryItem) => `${i.instanceId}:${i.kind}:${i.arrId}${i.season ? `:${i.season.number}` : ""}`;
+	const seasonOf = (i: LibraryItem) => (i.season ? { seasonNumber: i.season.number } : {});
 
 	const detail = (c: Candidate, outcome: Outcome, message?: string): RunDetail => ({
 		instanceId: c.item.instanceId,
 		arrItemId: c.item.arrId,
 		itemType: c.item.kind,
+		...seasonOf(c.item),
 		title: c.item.title,
 		ruleId: c.rule.id,
 		ruleName: c.rule.name,
 		action: c.rule.action,
 		reason: c.reason,
 		sizeOnDisk: c.item.sizeOnDisk,
+		poster: c.item.poster,
+		certification: c.item.certification,
 		outcome,
 		message,
 	});
@@ -262,6 +273,8 @@ export function createEngine(deps: EngineDeps) {
 				}
 			}
 			for (const { rule, expr } of cleanup) {
+				// Season items are only for "delete season" rules, and those rules only see season items.
+				if ((item.kind === "season") !== (rule.action === "delete_season")) continue;
 				if (!passesFilters(item, rule).ok) continue;
 				const r = evaluateExpression(expr, item, snap.ctx);
 				if (r.state !== "true") continue;
@@ -270,7 +283,7 @@ export function createEngine(deps: EngineDeps) {
 				break;
 			}
 		}
-		return { candidates, skipped, evaluated: snap.items.length };
+		return { candidates, skipped, evaluated: snap.items.filter((i) => i.kind !== "season").length };
 	}
 
 	function suppress(candidates: Candidate[], config: ConfigRecord): { keep: Candidate[]; skipped: RunDetail[] } {
@@ -306,6 +319,7 @@ export function createEngine(deps: EngineDeps) {
 	function snapshotOf(item: LibraryItem): SafetySnapshot {
 		return {
 			arrItemId: item.arrId,
+			...seasonOf(item),
 			title: item.title,
 			path: item.path,
 			sizeOnDisk: item.sizeOnDisk,
@@ -323,7 +337,7 @@ export function createEngine(deps: EngineDeps) {
 	 * Last check before any upstream write: re-read the live item, confirm it is still the
 	 * same thing that was selected, and re-run its rule plus every retention rule on fresh data.
 	 */
-	async function revalidate(args: { instanceId: string; arrItemId: number; ruleId: string; snapshot: SafetySnapshot | null; requireRule: boolean }): Promise<Revalidated> {
+	async function revalidate(args: { instanceId: string; arrItemId: number; seasonNumber?: number | null; ruleId: string; snapshot: SafetySnapshot | null; requireRule: boolean }): Promise<Revalidated> {
 		const inst = store.instances.get(args.instanceId);
 		if (!inst || !inst.enabled) return { ok: false, kind: "blocked", message: "Instance is missing or disabled" };
 		const api = deps.arr(inst);
@@ -340,7 +354,12 @@ export function createEngine(deps: EngineDeps) {
 		const { rules, needs } = activeRules();
 		const maps = await loadMaps(api);
 		const episodeFiles = api.service === "sonarr" && (needs.files || args.snapshot?.fileIds) ? await api.episodeFiles(args.arrItemId) : undefined;
-		const item = normalizeItem(raw, { instanceId: inst.id, service: api.service, ...maps, episodeFiles });
+		let item = normalizeItem(raw, { instanceId: inst.id, service: api.service, ...maps, episodeFiles });
+		if (args.seasonNumber != null) {
+			const season = seasonItems(item, raw, await api.episodes(args.arrItemId), episodeFiles).find((s) => s.season?.number === args.seasonNumber);
+			if (!season) return { ok: false, kind: "gone", message: `Season ${args.seasonNumber} no longer has files` };
+			item = season;
+		}
 
 		if (args.snapshot) {
 			const s = args.snapshot;
@@ -356,6 +375,7 @@ export function createEngine(deps: EngineDeps) {
 		const ev = await loadEvidence(needs);
 		const ctx: EvalContext = { now: now(), watch: ev.watch, seerr: ev.seerr };
 		for (const { rule: r, expr } of rules) {
+			if (r.mode === "cleanup" && r.id !== args.ruleId) continue;
 			if (!passesFilters(item, r).ok) continue;
 			const res = evaluateExpression(expr, item, ctx);
 			if (r.mode === "retention" && res.state !== "false") {
@@ -377,6 +397,11 @@ export function createEngine(deps: EngineDeps) {
 			await api.unmonitor(item.arrId);
 			return "unmonitored";
 		}
+		if (action === "delete_season") {
+			if (!item.season) throw new Error("Delete season needs a season");
+			await api.deleteSeason(item.arrId, item.season.number);
+			return "files_deleted";
+		}
 		await api.deleteFiles(await api.get(item.arrId));
 		return "files_deleted";
 	}
@@ -391,11 +416,11 @@ export function createEngine(deps: EngineDeps) {
 	/** Direct (no-approval) execution of one candidate. */
 	async function executeDirect(c: Candidate, ctx: { trigger: Trigger; actor: string; runLogId: string; snapshot: SafetySnapshot }): Promise<RunDetail> {
 		const correlationId = randomUUID();
-		const who = { instance: c.item.instanceId, arrId: c.item.arrId, kind: c.item.kind, title: c.item.title };
+		const who = { instance: c.item.instanceId, arrId: c.item.arrId, kind: c.item.kind, title: c.item.season ? `${c.item.title} (Season ${c.item.season.number})` : c.item.title };
 		const base = { correlationId, trigger: ctx.trigger, actor: ctx.actor, runLogId: ctx.runLogId, rule: c.rule, action: c.rule.action };
 		audit(who, { ...base, eventType: "selected", outcome: "info", reason: c.reason });
 		try {
-			const v = await revalidate({ instanceId: c.item.instanceId, arrItemId: c.item.arrId, ruleId: c.rule.id, snapshot: ctx.snapshot, requireRule: true });
+			const v = await revalidate({ instanceId: c.item.instanceId, arrItemId: c.item.arrId, seasonNumber: c.item.season?.number, ruleId: c.rule.id, snapshot: ctx.snapshot, requireRule: true });
 			if (!v.ok) {
 				audit(who, { ...base, eventType: v.kind === "gone" ? "already_removed" : "blocked", outcome: v.kind === "gone" ? "info" : "blocked", reason: v.message });
 				return detail(c, v.kind === "gone" ? "skipped" : "blocked", v.message);
@@ -413,7 +438,7 @@ export function createEngine(deps: EngineDeps) {
 
 	// ── Approvals ──────────────────────────────────────────────────────────
 	function approvalAudit(a: ApprovalRow, e: Omit<Parameters<typeof audit>[1], "action" | "reason" | "approvalId" | "rule"> & { reason: string }) {
-		audit({ instance: a.instanceId, arrId: a.arrItemId, kind: a.itemType, title: a.title }, { ...e, approvalId: a.id, rule: { id: a.ruleId, name: a.ruleName }, action: a.action });
+		audit({ instance: a.instanceId, arrId: a.arrItemId, kind: a.itemType, title: a.seasonNumber != null ? `${a.title} (Season ${a.seasonNumber})` : a.title }, { ...e, approvalId: a.id, rule: { id: a.ruleId, name: a.ruleName }, action: a.action });
 	}
 
 	function reject(id: string, actor: string): ApprovalRow {
@@ -446,7 +471,7 @@ export function createEngine(deps: EngineDeps) {
 			store.approvals.transition(id, ["executing", "retry_executing"], to, { executed: to === "executed", error });
 		};
 		try {
-			const v = await revalidate({ instanceId: a.instanceId, arrItemId: a.arrItemId, ruleId: a.ruleId, snapshot: a.safetySnapshot, requireRule: true });
+			const v = await revalidate({ instanceId: a.instanceId, arrItemId: a.arrItemId, seasonNumber: a.seasonNumber, ruleId: a.ruleId, snapshot: a.safetySnapshot, requireRule: true });
 			if (!v.ok) {
 				if (v.kind === "gone") {
 					done("executed", "Already removed before execution; no mutation performed");
@@ -516,8 +541,8 @@ export function createEngine(deps: EngineDeps) {
 					if (budget <= 0) break;
 					budget--;
 					const r = await approve(a.id, { actor, trigger: "retry", runLogId });
-					const outcome: Outcome = r.status === "executed" ? (r.action === "unmonitor" ? "unmonitored" : r.action === "delete_files" ? "files_deleted" : "removed") : r.status === "blocked" ? "blocked" : "failed";
-					details.push({ instanceId: r.instanceId, arrItemId: r.arrItemId, itemType: r.itemType, title: r.title, ruleId: r.ruleId, ruleName: r.ruleName, action: r.action, reason: r.reason, sizeOnDisk: r.sizeOnDisk, outcome, message: r.lastError ?? undefined });
+					const outcome: Outcome = r.status === "executed" ? (r.action === "unmonitor" ? "unmonitored" : r.action === "delete_files" || r.action === "delete_season" ? "files_deleted" : "removed") : r.status === "blocked" ? "blocked" : "failed";
+					details.push({ instanceId: r.instanceId, arrItemId: r.arrItemId, itemType: r.itemType, ...(r.seasonNumber != null ? { seasonNumber: r.seasonNumber } : {}), title: r.title, ruleId: r.ruleId, ruleName: r.ruleName, action: r.action, reason: r.reason, sizeOnDisk: r.sizeOnDisk, outcome, message: r.lastError ?? undefined });
 					tally(outcome, r.sizeOnDisk);
 				}
 			}
@@ -534,7 +559,7 @@ export function createEngine(deps: EngineDeps) {
 				budget--;
 				if (config.requireApproval) {
 					const approval = store.approvals.create({
-						instanceId: c.item.instanceId, arrItemId: c.item.arrId, itemType: c.item.kind, title: c.item.title, year: c.item.year,
+						instanceId: c.item.instanceId, arrItemId: c.item.arrId, seasonNumber: c.item.season?.number ?? null, itemType: c.item.kind, title: c.item.title, year: c.item.year,
 						sizeOnDisk: c.item.sizeOnDisk, ruleId: c.rule.id, ruleName: c.rule.name, reason: c.reason, action: c.rule.action,
 						safetySnapshot: snapshotOf(c.item), expiresAt: new Date(now().getTime() + config.approvalExpiryDays * 86_400_000),
 					});
@@ -570,7 +595,7 @@ export function createEngine(deps: EngineDeps) {
 	}
 
 	// ── Explain ────────────────────────────────────────────────────────────
-	async function explain(instanceId: string, arrItemId: number) {
+	async function explain(instanceId: string, arrItemId: number, seasonNumber?: number | null) {
 		const inst = store.instances.get(instanceId);
 		if (!inst || (inst.type !== "sonarr" && inst.type !== "radarr")) throw new ConflictError("Unknown Sonarr/Radarr instance");
 		const api = deps.arr(inst);
@@ -578,15 +603,21 @@ export function createEngine(deps: EngineDeps) {
 		const { rules, needs } = activeRules();
 		const maps = await loadMaps(api);
 		const episodeFiles = api.service === "sonarr" && needs.files ? await api.episodeFiles(arrItemId) : undefined;
-		const item = normalizeItem(raw, { instanceId, service: api.service, ...maps, episodeFiles });
+		let item = normalizeItem(raw, { instanceId, service: api.service, ...maps, episodeFiles });
+		if (seasonNumber != null) {
+			const season = seasonItems(item, raw, await api.episodes(arrItemId), episodeFiles).find((s) => s.season?.number === seasonNumber);
+			if (!season) throw new ConflictError(`Season ${seasonNumber} has no files`);
+			item = season;
+		}
 		const ev = await loadEvidence(needs);
 		const ctx: EvalContext = { now: now(), watch: ev.watch, seerr: ev.seerr };
 		const warnings = ev.warnings;
 		return {
-			item: { title: item.title, year: item.year, kind: item.kind, sizeOnDisk: item.sizeOnDisk, monitored: item.monitored, tags: item.tags, path: item.path },
+			item: { title: item.title, year: item.year, kind: item.kind, seasonNumber: item.season?.number ?? null, sizeOnDisk: item.sizeOnDisk, monitored: item.monitored, tags: item.tags, path: item.path },
 			warnings,
 			rules: rules.map(({ rule, expr }) => {
-				const f = passesFilters(item, rule);
+				const seasonScope = rule.mode === "cleanup" && (item.kind === "season") !== (rule.action === "delete_season");
+				const f: ReturnType<typeof passesFilters> = seasonScope ? { ok: false, why: item.kind === "season" ? "not a season rule" : "season rules only act on seasons" } : passesFilters(item, rule);
 				const ev: EvalNode | null = f.ok ? evaluateExpression(expr, item, ctx) : null;
 				return { ruleId: rule.id, name: rule.name, mode: rule.mode, action: rule.action, inScope: f.ok, excludedBy: f.ok ? null : f.why, state: ev?.state ?? null, tree: ev };
 			}),
@@ -611,7 +642,29 @@ export function createEngine(deps: EngineDeps) {
 		};
 	}
 
-	return { run, preview, explain, approve, reject, snapshotOf, MAX_ATTEMPTS };
+	// ── Episodes ───────────────────────────────────────────────────────────
+	/** Episodes with files on disk for one series (optionally one season), grouped by season: what a delete would remove. */
+	async function episodesOnDisk(instanceId: string, seriesId: number, season?: number | null) {
+		const inst = store.instances.get(instanceId);
+		if (!inst || inst.type !== "sonarr") throw new ConflictError("Unknown Sonarr instance");
+		const api = deps.arr(inst);
+		const [eps, files] = await Promise.all([api.episodes(seriesId), api.episodeFiles(seriesId)]);
+		const size = new Map(files.map((f) => [f.id, typeof f.size === "number" ? f.size : 0]));
+		const seasons = new Map<number, Array<{ number: number; title: string | null; airDate: string | null; size: number }>>();
+		for (const e of eps) {
+			if (!e.hasFile || typeof e.seasonNumber !== "number" || (season != null && e.seasonNumber !== season)) continue;
+			const list = seasons.get(e.seasonNumber) ?? [];
+			list.push({ number: e.episodeNumber, title: typeof e.title === "string" ? e.title : null, airDate: typeof e.airDateUtc === "string" ? e.airDateUtc : null, size: size.get(e.episodeFileId) ?? 0 });
+			seasons.set(e.seasonNumber, list);
+		}
+		return [...seasons].sort(([a], [b]) => a - b).map(([number, episodes]) => ({
+			number,
+			size: episodes.reduce((n, e) => n + e.size, 0),
+			episodes: episodes.sort((a, b) => a.number - b.number),
+		}));
+	}
+
+	return { run, preview, explain, approve, reject, snapshotOf, episodesOnDisk, MAX_ATTEMPTS };
 }
 
 export type Engine = ReturnType<typeof createEngine>;

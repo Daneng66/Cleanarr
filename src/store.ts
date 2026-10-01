@@ -23,6 +23,8 @@ export interface ApprovalRow {
 	instanceId: string;
 	arrItemId: number;
 	itemType: ItemKind;
+	/** Season approvals only: which season of the series (arrItemId). */
+	seasonNumber: number | null;
 	title: string;
 	year: number | null;
 	sizeOnDisk: number;
@@ -43,6 +45,7 @@ export interface ApprovalRow {
 /** Identity of what was approved. Execution aborts if the live item no longer matches. */
 export interface SafetySnapshot {
 	arrItemId: number;
+	seasonNumber?: number;
 	title: string;
 	path: string | null;
 	sizeOnDisk: number;
@@ -221,6 +224,7 @@ export function createStore(db: Db, enc: Encryptor, now: () => Date = () => new 
 		instanceId: r.instance_id,
 		arrItemId: r.arr_item_id,
 		itemType: r.item_type,
+		seasonNumber: r.season_number ?? null,
 		title: r.title,
 		year: r.year,
 		sizeOnDisk: r.size_on_disk,
@@ -238,6 +242,8 @@ export function createStore(db: Db, enc: Encryptor, now: () => Date = () => new 
 		createdAt: r.created_at,
 	});
 
+	/** Same key the engine builds for a LibraryItem: seasons are distinct targets from their series. */
+	const targetKey = (r: any) => `${r.instance_id}:${r.item_type}:${r.arr_item_id}${r.season_number != null ? `:${r.season_number}` : ""}`;
 	const OPEN = ["pending", "approved", "retry_pending", "executing", "retry_executing"];
 	const approvals = {
 		get(id: string): ApprovalRow | undefined {
@@ -257,23 +263,23 @@ export function createStore(db: Db, enc: Encryptor, now: () => Date = () => new 
 		},
 		/** Targets that already have unfinished work; the engine must not propose them again. */
 		openTargets(): Set<string> {
-			const rows = db.prepare(`SELECT instance_id, arr_item_id, item_type FROM approvals WHERE status IN (${OPEN.map(() => "?").join(",")})`).all(...OPEN) as any[];
-			return new Set(rows.map((r) => `${r.instance_id}:${r.item_type}:${r.arr_item_id}`));
+			const rows = db.prepare(`SELECT instance_id, arr_item_id, item_type, season_number FROM approvals WHERE status IN (${OPEN.map(() => "?").join(",")})`).all(...OPEN) as any[];
+			return new Set(rows.map(targetKey));
 		},
 		/** Targets rejected recently enough that the rule's rejection memory still suppresses them. */
 		rejectedSince(): Array<{ key: string; ruleId: string; reviewedAt: string }> {
-			const rows = db.prepare("SELECT instance_id, arr_item_id, item_type, rule_id, reviewed_at FROM approvals WHERE status = 'rejected' AND reviewed_at IS NOT NULL").all() as any[];
-			return rows.map((r) => ({ key: `${r.instance_id}:${r.item_type}:${r.arr_item_id}`, ruleId: r.rule_id, reviewedAt: r.reviewed_at }));
+			const rows = db.prepare("SELECT instance_id, arr_item_id, item_type, season_number, rule_id, reviewed_at FROM approvals WHERE status = 'rejected' AND reviewed_at IS NOT NULL").all() as any[];
+			return rows.map((r) => ({ key: targetKey(r), ruleId: r.rule_id, reviewedAt: r.reviewed_at }));
 		},
 		create(a: {
-			instanceId: string; arrItemId: number; itemType: ItemKind; title: string; year: number | null; sizeOnDisk: number;
+			instanceId: string; arrItemId: number; seasonNumber?: number | null; itemType: ItemKind; title: string; year: number | null; sizeOnDisk: number;
 			ruleId: string; ruleName: string; reason: string; action: CleanupAction; safetySnapshot: SafetySnapshot; expiresAt: Date;
 		}): ApprovalRow {
 			const id = randomUUID();
 			db.prepare(
-				`INSERT INTO approvals (id,instance_id,arr_item_id,item_type,title,year,size_on_disk,rule_id,rule_name,reason,action,safety_snapshot,expires_at,created_at)
-				 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			).run(id, a.instanceId, a.arrItemId, a.itemType, a.title, a.year, a.sizeOnDisk, a.ruleId, a.ruleName, a.reason, a.action, JSON.stringify(a.safetySnapshot), iso(a.expiresAt), iso(now()));
+				`INSERT INTO approvals (id,instance_id,arr_item_id,season_number,item_type,title,year,size_on_disk,rule_id,rule_name,reason,action,safety_snapshot,expires_at,created_at)
+				 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			).run(id, a.instanceId, a.arrItemId, a.seasonNumber ?? null, a.itemType, a.title, a.year, a.sizeOnDisk, a.ruleId, a.ruleName, a.reason, a.action, JSON.stringify(a.safetySnapshot), iso(a.expiresAt), iso(now()));
 			return approvals.get(id) as ApprovalRow;
 		},
 		expireDue(): number {
