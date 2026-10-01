@@ -84,10 +84,10 @@ describe("safety", () => {
 		const s = setup({ radarr: [movie(1)], watch: "fail" });
 		live(s);
 		s.rule("old", old(100));
-		s.rule("recently watched", { type: "tautulli_last_watched", params: { operator: "watched_within_days", days: 30 } }, { mode: "retention" });
+		s.rule("recently watched", { type: "last_watched", params: { operator: "watched_within_days", days: 30 } }, { mode: "retention" });
 		const log = await s.engine.run({ trigger: "manual" });
 		expect(s.radarrApi.calls).toEqual([]);
-		expect(log?.warnings.join()).toMatch(/Tautulli/);
+		expect(log?.warnings.join()).toMatch(/Watch history/);
 		// Planner-level protection (independent of the mutation-boundary recheck):
 		const p = await s.engine.preview();
 		expect(p.candidates).toHaveLength(0);
@@ -96,14 +96,14 @@ describe("safety", () => {
 	it("watch rules never match when Tautulli is down", async () => {
 		const s = setup({ radarr: [movie(1)], watch: "fail" });
 		live(s);
-		s.rule("unwatched", { type: "tautulli_last_watched", params: { operator: "not_watched_in_days", days: 30 } });
+		s.rule("unwatched", { type: "last_watched", params: { operator: "not_watched_in_days", days: 30 } });
 		await s.engine.run({ trigger: "manual" });
 		expect(s.radarrApi.calls).toEqual([]);
 	});
 	it("uses Tautulli data when available", async () => {
 		const s = setup({ radarr: [movie(1), movie(2)], watch: { "movie:1001": { lastWatchedAt: new Date(NOW.getTime() - 5 * DAY), watchCount: 3, watchedBy: ["a"] } } });
 		live(s);
-		s.rule("unwatched", { type: "tautulli_last_watched", params: { operator: "not_watched_in_days", days: 30 } });
+		s.rule("unwatched", { type: "last_watched", params: { operator: "not_watched_in_days", days: 30 } });
 		await s.engine.run({ trigger: "manual" });
 		expect(s.radarrApi.calls).toEqual(["delete:2:true"]);
 	});
@@ -349,5 +349,68 @@ describe("explain & preview", () => {
 		expect(p.totalBytes).toBe(20 * GB);
 		expect(s.radarrApi.calls).toEqual([]);
 		expect(s.store.logs.list()).toHaveLength(0);
+	});
+});
+
+describe("Plex + Seerr stack", () => {
+	const alice = { id: 1, status: 2, createdAt: new Date(NOW.getTime() - 300 * DAY), updatedAt: NOW, is4k: false, requesters: ["Alice"] };
+	const watchedBy = (...users: string[]) => ({ lastWatchedAt: new Date(NOW.getTime() - 10 * DAY), watchCount: users.length, watchedBy: users });
+	const requesterWatched = { op: "and", of: [{ type: "seerr_requester_watched", params: { operator: "requester_watched" } }, old(100)] };
+
+	it("removes titles the requester has already watched, and keeps the rest", async () => {
+		const s = setup({
+			radarr: [movie(1), movie(2), movie(3)],
+			watch: { "movie:1001": watchedBy("Alice"), "movie:1002": watchedBy("Bob") },
+			seerr: { "movie:1001": [alice], "movie:1002": [alice], "movie:1003": [alice] },
+		});
+		live(s);
+		s.rule("requester watched", requesterWatched);
+		await s.engine.run({ trigger: "manual" });
+		expect(s.radarrApi.calls).toEqual(["delete:1:true"]); // 2: only Bob watched; 3: nobody watched
+	});
+	it("an unreachable Seerr blocks request-based removal and warns", async () => {
+		const s = setup({ radarr: [movie(1)], watch: { "movie:1001": watchedBy("Alice") }, seerr: "fail" });
+		live(s);
+		s.rule("requester watched", requesterWatched);
+		const log = await s.engine.run({ trigger: "manual" });
+		expect(s.radarrApi.calls).toEqual([]);
+		expect(log?.warnings.join()).toMatch(/Seerr: seerr down/);
+	});
+	it("an unreachable Plex blocks watch-based removal and warns", async () => {
+		const s = setup({ radarr: [movie(1)], watch: "fail", seerr: { "movie:1001": [alice] } });
+		live(s);
+		s.rule("requester watched", requesterWatched);
+		const log = await s.engine.run({ trigger: "manual" });
+		expect(s.radarrApi.calls).toEqual([]);
+		expect(log?.warnings.join()).toMatch(/Watch history: plex down/);
+	});
+	it("warns when rules need Seerr but none is configured", async () => {
+		const s = setup({ radarr: [movie(1)] });
+		s.rule("not requested", { type: "seerr_is_requested", params: { operator: "not_requested" } });
+		const log = await s.engine.run({ trigger: "manual" });
+		expect(log?.itemsFlagged).toBe(0);
+		expect(log?.warnings.join()).toMatch(/no Seerr instance/);
+	});
+	it("manually-added (never requested) titles can be targeted, and a retention rule can still protect them", async () => {
+		const s = setup({ radarr: [movie(1), movie(2, { tags: [1] })], seerr: { "movie:1001": [] } });
+		live(s);
+		s.rule("not requested", { op: "and", of: [{ type: "seerr_is_requested", params: { operator: "not_requested" } }, old(100)] });
+		s.rule("keep", { type: "tag_match", params: { operator: "includes_any", tags: ["keep"] } }, { mode: "retention" });
+		await s.engine.run({ trigger: "manual" });
+		expect(s.radarrApi.calls).toEqual(["delete:1:true"]);
+	});
+	it("approval execution re-checks Seerr/Plex on fresh data", async () => {
+		const s = setup({ radarr: [movie(1)], watch: { "movie:1001": watchedBy("Alice") }, seerr: { "movie:1001": [alice] } });
+		live(s, { requireApproval: true });
+		s.rule("requester watched", requesterWatched);
+		await s.engine.run({ trigger: "manual" });
+		const [a] = s.store.approvals.list("pending");
+		expect(a).toBeDefined();
+		// Plex becomes unreachable before the operator clicks approve: execution must not proceed on stale evidence.
+		const insts = s.store.instances.list().find((i) => i.type === "plex")!;
+		s.store.instances.update(insts.id, { enabled: false });
+		const r = await s.engine.approve(a!.id, { actor: "me" });
+		expect(r.status).toBe("blocked");
+		expect(s.radarrApi.calls).toEqual([]);
 	});
 });

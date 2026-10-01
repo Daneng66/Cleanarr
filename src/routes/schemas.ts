@@ -10,7 +10,7 @@ const url = z
 
 export const instanceCreate = z.object({
 	name: z.string().trim().min(1).max(100),
-	type: z.enum(["sonarr", "radarr", "tautulli"]),
+	type: z.enum(["sonarr", "radarr", "plex", "tautulli", "seerr"]),
 	url,
 	apiKey: z.string().trim().min(1),
 	enabled: z.boolean().optional(),
@@ -21,7 +21,7 @@ export const instanceUpdate = z.object({
 	apiKey: z.string().trim().min(1).optional(),
 	enabled: z.boolean().optional(),
 });
-export const instanceTest = z.object({ type: z.enum(["sonarr", "radarr", "tautulli"]), url, apiKey: z.string().trim().min(1) });
+export const instanceTest = z.object({ type: z.enum(["sonarr", "radarr", "plex", "tautulli", "seerr"]), url, apiKey: z.string().trim().min(1) });
 
 export const configUpdate = z
 	.object({

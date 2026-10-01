@@ -1,7 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import pino from "pino";
-import { createArrClient } from "./arr/client.js";
 import { createEngine } from "./cleanup/engine.js";
 import { createScheduler } from "./cleanup/scheduler.js";
 import { loadConfig } from "./config.js";
@@ -9,13 +8,13 @@ import { createEncryptor, resolveSecret } from "./crypto.js";
 import { openDb } from "./db.js";
 import { buildApp } from "./server.js";
 import { createStore } from "./store.js";
-import { createTautulliProvider } from "./watch/tautulli.js";
+import { createProviders } from "./services.js";
 
 const cfg = loadConfig();
 const log = pino({ level: cfg.logLevel });
 const db = openDb(join(cfg.dataDir, "cleanarr.db"));
 const store = createStore(db, createEncryptor(resolveSecret(cfg.dataDir, cfg.secretKey)));
-const engine = createEngine({ store, log, arr: (i) => createArrClient(i), watch: (i) => createTautulliProvider(i, db) });
+const engine = createEngine({ store, log, ...createProviders(db) });
 
 let version = "dev";
 try {

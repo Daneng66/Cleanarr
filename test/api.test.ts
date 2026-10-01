@@ -22,6 +22,19 @@ describe("auth", () => {
 	});
 });
 
+describe("request bodies", () => {
+	it("action endpoints accept an empty body with a JSON content-type", async () => {
+		const { app: a } = app();
+		expect((await a.inject({ method: "POST", url: "/api/preview", headers: { "content-type": "application/json" }, payload: "" })).statusCode).toBe(200);
+		expect((await a.inject({ method: "POST", url: "/api/run", headers: { "content-type": "application/json" }, payload: "" })).statusCode).toBe(200);
+	});
+	it("malformed JSON is a 400, not a 500", async () => {
+		const { app: a } = app();
+		const res = await a.inject({ method: "POST", url: "/api/rules", headers: { "content-type": "application/json" }, payload: "{nope" });
+		expect(res.statusCode).toBe(400);
+	});
+});
+
 describe("instances", () => {
 	it("never returns API keys and stores them encrypted", async () => {
 		const { s, app: a } = app();

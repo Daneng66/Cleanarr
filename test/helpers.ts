@@ -3,6 +3,7 @@ import { createEncryptor } from "../src/crypto.js";
 import { createStore } from "../src/store.js";
 import { createEngine } from "../src/cleanup/engine.js";
 import { ArrHttpError, type ArrApi, type RawItem } from "../src/arr/client.js";
+import type { SeerrRequest } from "../src/seerr/seerr.js";
 import type { Service, WatchInfo } from "../src/types.js";
 
 export const DAY = 86_400_000;
@@ -54,7 +55,7 @@ export function series(id: number, over: RawItem = {}): RawItem {
 	};
 }
 
-export function setup(opts: { radarr?: RawItem[]; sonarr?: RawItem[]; watch?: Record<string, WatchInfo> | "fail" | null } = {}) {
+export function setup(opts: { radarr?: RawItem[]; sonarr?: RawItem[]; watch?: Record<string, WatchInfo> | "fail" | null; seerr?: Record<string, SeerrRequest[]> | "fail" | null } = {}) {
 	const db = openDb(":memory:");
 	const store = createStore(db, createEncryptor("test-secret"), () => clock.now);
 	const clock = { now: new Date(NOW) };
@@ -66,20 +67,29 @@ export function setup(opts: { radarr?: RawItem[]; sonarr?: RawItem[]; watch?: Re
 		sonarr = store.instances.create({ name: "Sonarr", type: "sonarr", url: "http://sonarr", apiKey: "k" });
 		arrs.set(sonarr.id, new FakeArr("sonarr", opts.sonarr));
 	}
-	if (opts.watch !== undefined && opts.watch !== null) store.instances.create({ name: "Tautulli", type: "tautulli", url: "http://t", apiKey: "k" });
+	if (opts.watch !== undefined && opts.watch !== null) store.instances.create({ name: "Plex", type: "plex", url: "http://plex:32400", apiKey: "k" });
+	if (opts.seerr !== undefined && opts.seerr !== null) store.instances.create({ name: "Seerr", type: "seerr", url: "http://seerr:5055", apiKey: "k" });
 	const engine = createEngine({
 		store,
 		now: () => clock.now,
 		log: { info() {}, warn() {}, error() {} },
 		arr: (i) => arrs.get(i.id) as ArrApi,
+		seerr: () => ({
+			async load() {
+				if (opts.seerr === "fail" || !opts.seerr) throw new Error("seerr down");
+				const m = opts.seerr;
+				return { warnings: [], lookup: (item) => m[`${item.kind}:${item.tmdbId}`] ?? [] };
+			},
+		}),
 		watch: () => ({
 			async load() {
-				if (opts.watch === "fail" || !opts.watch) throw new Error("tautulli down");
+				if (opts.watch === "fail" || !opts.watch) throw new Error("plex down");
 				const w = opts.watch;
 				return { warnings: [], lookup: (item) => (item.tmdbId !== null ? w[`${item.kind}:${item.tmdbId}`] : undefined) };
 			},
 		}),
 	});
+	// (seerr provider is injected below)
 	const rule = (name: string, expression: unknown, extra: Record<string, unknown> = {}) =>
 		store.rules.create({
 			name, enabled: true, priority: 0, mode: "cleanup", action: "delete", expression, serviceFilter: null, instanceFilter: null,

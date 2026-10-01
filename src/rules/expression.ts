@@ -66,13 +66,14 @@ export function parseExpression(raw: unknown): Expression {
 	return tree;
 }
 
-export function requirements(expr: Expression): { files: boolean; watch: boolean } {
-	const out = { files: false, watch: false };
+export function requirements(expr: Expression): { files: boolean; watch: boolean; seerr: boolean } {
+	const out = { files: false, watch: false, seerr: false };
 	const visit = (e: Expression) => {
 		if ("type" in e) {
 			const needs = RULE_TYPES.get(e.type)?.needs;
 			if (needs === "files") out.files = true;
-			if (needs === "watch") out.watch = true;
+			if (needs === "watch" || needs === "watch+seerr") out.watch = true;
+			if (needs === "seerr" || needs === "watch+seerr") out.seerr = true;
 		} else {
 			for (const c of Array.isArray(e.of) ? e.of : [e.of]) visit(c);
 		}

@@ -1,5 +1,5 @@
 export type Service = "sonarr" | "radarr";
-export type InstanceType = Service | "tautulli";
+export type InstanceType = Service | "plex" | "tautulli" | "seerr";
 export type ItemKind = "movie" | "series";
 export type CleanupAction = "delete" | "unmonitor" | "delete_files";
 export type RuleMode = "cleanup" | "retention";

@@ -128,6 +128,26 @@ CREATE TABLE tautulli_guid_cache (
 	PRIMARY KEY (instance_id, rating_key)
 );
 `,
+	// 2: Plex + Seerr instance types; watch rules are provider-neutral (were tautulli_*).
+	`
+CREATE TABLE instances_new (
+	id TEXT PRIMARY KEY,
+	name TEXT NOT NULL,
+	type TEXT NOT NULL CHECK (type IN ('sonarr','radarr','plex','tautulli','seerr')),
+	url TEXT NOT NULL,
+	api_key_enc TEXT NOT NULL,
+	enabled INTEGER NOT NULL DEFAULT 1,
+	created_at TEXT NOT NULL
+);
+INSERT INTO instances_new SELECT * FROM instances;
+DROP TABLE instances;
+ALTER TABLE instances_new RENAME TO instances;
+
+UPDATE rules SET expression = REPLACE(REPLACE(REPLACE(expression,
+	'"tautulli_last_watched"', '"last_watched"'),
+	'"tautulli_watch_count"', '"watch_count"'),
+	'"tautulli_watched_by"', '"watched_by"');
+`,
 ];
 
 export function openDb(path: string): Db {
@@ -139,9 +159,9 @@ export function openDb(path: string): Db {
 	return db;
 }
 
-export function migrate(db: Db): void {
+export function migrate(db: Db, target: number = MIGRATIONS.length): void {
 	const current = db.pragma("user_version", { simple: true }) as number;
-	for (let v = current; v < MIGRATIONS.length; v++) {
+	for (let v = current; v < target; v++) {
 		db.transaction(() => {
 			db.exec(MIGRATIONS[v] as string);
 			db.pragma(`user_version = ${v + 1}`);

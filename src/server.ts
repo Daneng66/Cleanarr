@@ -4,13 +4,12 @@ import { fileURLToPath } from "node:url";
 import fastifyStatic from "@fastify/static";
 import Fastify, { type FastifyInstance } from "fastify";
 import { ZodError } from "zod";
-import { createArrClient } from "./arr/client.js";
 import { ConflictError, DryRunError, RunInProgressError, createEngine, type Engine } from "./cleanup/engine.js";
 import { describeRuleTypes, } from "./rules/registry.js";
 import { parseExpression } from "./rules/expression.js";
 import * as S from "./routes/schemas.js";
 import type { Store } from "./store.js";
-import { createTautulliProvider, testTautulli } from "./watch/tautulli.js";
+import { createProviders, testConnection } from "./services.js";
 import type { Db } from "./db.js";
 
 export interface AppDeps {
@@ -33,12 +32,16 @@ export function buildApp(deps: AppDeps): FastifyInstance {
 	const app = Fastify({ logger: deps.logger ?? false, bodyLimit: 1_000_000 });
 	const engine =
 		deps.engine ??
-		createEngine({
-			store,
-			log: app.log,
-			arr: (i) => createArrClient(i),
-			watch: (i) => createTautulliProvider(i, db),
-		});
+		createEngine({ store, log: app.log, ...createProviders(db) });
+
+	// Action endpoints (/preview, /run) take no required body; tolerate an empty one with a JSON content-type.
+	app.addContentTypeParser("application/json", { parseAs: "string" }, (_req, body, done) => {
+		try {
+			done(null, body ? JSON.parse(body as string) : {});
+		} catch {
+			done(Object.assign(new Error("Invalid JSON body"), { statusCode: 400 }), undefined);
+		}
+	});
 
 	app.setErrorHandler((err: any, _req, reply) => {
 		if (err instanceof ZodError) return reply.code(400).send({ error: "Validation failed", issues: err.issues.map((i) => `${i.path.join(".") || "body"}: ${i.message}`) });
@@ -75,15 +78,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
 			return updated ? publicInstance(updated) : reply.code(404).send({ error: "Not found" });
 		});
 		api.delete<{ Params: { id: string } }>("/instances/:id", async (req, reply) => (store.instances.delete(req.params.id) ? reply.code(204).send() : reply.code(404).send({ error: "Not found" })));
-		const probe = async (i: { type: "sonarr" | "radarr" | "tautulli"; url: string; apiKey: string }) => {
-			try {
-				if (i.type === "tautulli") await testTautulli(i);
-				else await createArrClient(i).status();
-				return { ok: true };
-			} catch (e) {
-				return { ok: false, error: (e as Error).message.replace(i.apiKey, "***") };
-			}
-		};
+		const probe = testConnection;
 		api.post("/instances/test", async (req) => probe(S.instanceTest.parse(req.body)));
 		api.post<{ Params: { id: string } }>("/instances/:id/test", async (req, reply) => {
 			const i = store.instances.get(req.params.id);

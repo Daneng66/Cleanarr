@@ -5,8 +5,9 @@ import { evaluateExpression, parseExpression, requirements, type EvalNode, type 
 import { passesFilters } from "../rules/filters.js";
 import type { EvalContext } from "../rules/registry.js";
 import type { ApprovalRow, SafetySnapshot, Store } from "../store.js";
-import type { WatchProvider } from "../watch/tautulli.js";
-import type { CleanupAction, Candidate, ConfigRecord, Instance, LibraryItem, RuleRecord, Trigger } from "../types.js";
+import type { SeerrProvider, SeerrRequest } from "../seerr/seerr.js";
+import type { WatchProvider } from "../watch/index.js";
+import type { CleanupAction, Candidate, ConfigRecord, Instance, LibraryItem, RuleRecord, Trigger, WatchInfo } from "../types.js";
 
 export interface Logger {
 	info(obj: unknown, msg?: string): void;
@@ -18,6 +19,7 @@ export interface EngineDeps {
 	store: Store;
 	arr: (instance: Instance) => ArrApi;
 	watch: (instance: Instance) => WatchProvider;
+	seerr: (instance: Instance) => SeerrProvider;
 	now?: () => Date;
 	log: Logger;
 }
@@ -61,7 +63,6 @@ interface Snapshot {
 	warnings: string[];
 	failedInstances: Set<string>;
 	ctx: EvalContext;
-	watchHealth: "ok" | "failed" | "skipped";
 }
 
 interface Plan {
@@ -97,7 +98,53 @@ export function createEngine(deps: EngineDeps) {
 		};
 	}
 
-	async function loadSnapshot(needs: { files: boolean; watch: boolean }): Promise<Snapshot> {
+	/** Merges several watch providers. Counts use max (providers overlap on the same plays), not sum. */
+	function combineWatch(lookups: Array<(i: LibraryItem) => WatchInfo | undefined>): (i: LibraryItem) => WatchInfo | undefined {
+		if (lookups.length === 1) return lookups[0] as (i: LibraryItem) => WatchInfo | undefined;
+		return (item) => {
+			const hits = lookups.map((l) => l(item)).filter((x): x is WatchInfo => !!x);
+			if (!hits.length) return undefined;
+			const dates = hits.map((h) => h.lastWatchedAt).filter((d): d is Date => !!d).sort((a, b) => b.getTime() - a.getTime());
+			return { lastWatchedAt: dates[0] ?? null, watchCount: Math.max(...hits.map((h) => h.watchCount)), watchedBy: [...new Set(hits.flatMap((h) => h.watchedBy))] };
+		};
+	}
+
+	/**
+	 * Loads watch history (Plex/Tautulli) and Seerr requests when rules need them. Any provider
+	 * failure makes that evidence unavailable as a whole, so dependent rules evaluate to "unknown".
+	 */
+	async function loadEvidence(needs: { watch: boolean; seerr: boolean }): Promise<{ watch: EvalContext["watch"]; seerr: EvalContext["seerr"]; warnings: string[] }> {
+		const out: { watch: EvalContext["watch"]; seerr: EvalContext["seerr"]; warnings: string[] } = { watch: null, seerr: null, warnings: [] };
+		const enabled = store.instances.list().filter((i) => i.enabled);
+		if (needs.watch) {
+			const sources = enabled.filter((i) => i.type === "plex" || i.type === "tautulli");
+			if (!sources.length) out.warnings.push("Watch-history rules are configured but no Plex or Tautulli instance is enabled; those rules cannot match");
+			else {
+				try {
+					const loaded = await Promise.all(sources.map((i) => deps.watch(i).load()));
+					out.watch = combineWatch(loaded.map((l) => l.lookup));
+					out.warnings.push(...loaded.flatMap((l) => l.warnings));
+				} catch (e) {
+					out.warnings.push(`Watch history: ${(e as Error).message}; watch-history rules cannot match this run`);
+				}
+			}
+		}
+		if (needs.seerr) {
+			const sources = enabled.filter((i) => i.type === "seerr");
+			if (!sources.length) out.warnings.push("Request rules are configured but no Seerr instance is enabled; those rules cannot match");
+			else {
+				try {
+					const loaded = await Promise.all(sources.map((i) => deps.seerr(i).load()));
+					out.seerr = (item) => [...new Map(loaded.flatMap((l) => l.lookup(item)).map((r: SeerrRequest) => [r.id, r])).values()];
+				} catch (e) {
+					out.warnings.push(`Seerr: ${(e as Error).message}; request rules cannot match this run`);
+				}
+			}
+		}
+		return out;
+	}
+
+	async function loadSnapshot(needs: { files: boolean; watch: boolean; seerr: boolean }): Promise<Snapshot> {
 		const instances = store.instances.list().filter((i) => i.enabled);
 		const snap: Snapshot = {
 			items: [],
@@ -105,8 +152,7 @@ export function createEngine(deps: EngineDeps) {
 			instances: new Map(instances.map((i) => [i.id, i])),
 			warnings: [],
 			failedInstances: new Set(),
-			ctx: { now: now(), watch: null },
-			watchHealth: "skipped",
+			ctx: { now: now(), watch: null, seerr: null },
 		};
 
 		await Promise.all(
@@ -141,27 +187,15 @@ export function createEngine(deps: EngineDeps) {
 				}),
 		);
 
-		if (needs.watch) {
-			const tautulli = instances.find((i) => i.type === "tautulli");
-			if (!tautulli) {
-				snap.warnings.push("Watch-history rules are configured but no Tautulli instance is enabled; those rules cannot match");
-			} else {
-				try {
-					const { lookup, warnings } = await deps.watch(tautulli).load();
-					snap.ctx.watch = lookup;
-					snap.warnings.push(...warnings);
-					snap.watchHealth = "ok";
-				} catch (e) {
-					snap.watchHealth = "failed";
-					snap.warnings.push(`Tautulli: ${(e as Error).message}; watch-history rules cannot match this run`);
-				}
-			}
-		}
+		const ev = await loadEvidence(needs);
+		snap.ctx.watch = ev.watch;
+		snap.ctx.seerr = ev.seerr;
+		snap.warnings.push(...ev.warnings);
 		return snap;
 	}
 
-	function activeRules(): { rules: Array<{ rule: RuleRecord; expr: Expression }>; needs: { files: boolean; watch: boolean }; warnings: string[] } {
-		const needs = { files: false, watch: false };
+	function activeRules(): { rules: Array<{ rule: RuleRecord; expr: Expression }>; needs: { files: boolean; watch: boolean; seerr: boolean }; warnings: string[] } {
+		const needs = { files: false, watch: false, seerr: false };
 		const warnings: string[] = [];
 		const rules: Array<{ rule: RuleRecord; expr: Expression }> = [];
 		for (const rule of store.rules.list().filter((r) => r.enabled)) {
@@ -170,6 +204,7 @@ export function createEngine(deps: EngineDeps) {
 				const req = requirements(expr);
 				needs.files ||= req.files;
 				needs.watch ||= req.watch;
+				needs.seerr ||= req.seerr;
 				rules.push({ rule, expr });
 			} catch (e) {
 				warnings.push(`Rule "${rule.name}" skipped: invalid expression (${(e as Error).message})`);
@@ -306,17 +341,8 @@ export function createEngine(deps: EngineDeps) {
 			if (mismatch) return { ok: false, kind: "blocked", message: `Item changed since it was selected (${mismatch})` };
 		}
 
-		const ctx: EvalContext = { now: now(), watch: null };
-		if (needs.watch) {
-			const tautulli = store.instances.list().find((i) => i.enabled && i.type === "tautulli");
-			if (tautulli) {
-				try {
-					ctx.watch = (await deps.watch(tautulli).load()).lookup;
-				} catch {
-					/* stays null: dependent rules evaluate to unknown, which blocks below */
-				}
-			}
-		}
+		const ev = await loadEvidence(needs);
+		const ctx: EvalContext = { now: now(), watch: ev.watch, seerr: ev.seerr };
 		for (const { rule: r, expr } of rules) {
 			if (!passesFilters(item, r).ok) continue;
 			const res = evaluateExpression(expr, item, ctx);
@@ -541,18 +567,9 @@ export function createEngine(deps: EngineDeps) {
 		const maps = await loadMaps(api);
 		const episodeFiles = api.service === "sonarr" && needs.files ? await api.episodeFiles(arrItemId) : undefined;
 		const item = normalizeItem(raw, { instanceId, service: api.service, ...maps, episodeFiles });
-		const ctx: EvalContext = { now: now(), watch: null };
-		const warnings: string[] = [];
-		if (needs.watch) {
-			const t = store.instances.list().find((i) => i.enabled && i.type === "tautulli");
-			if (t) {
-				try {
-					ctx.watch = (await deps.watch(t).load()).lookup;
-				} catch (e) {
-					warnings.push(`Tautulli: ${(e as Error).message}`);
-				}
-			} else warnings.push("No Tautulli instance enabled");
-		}
+		const ev = await loadEvidence(needs);
+		const ctx: EvalContext = { now: now(), watch: ev.watch, seerr: ev.seerr };
+		const warnings = ev.warnings;
 		return {
 			item: { title: item.title, year: item.year, kind: item.kind, sizeOnDisk: item.sizeOnDisk, monitored: item.monitored, tags: item.tags, path: item.path },
 			warnings,

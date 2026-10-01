@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { SeerrRequest } from "../seerr/seerr.js";
 import type { FileInfo, LibraryItem, WatchInfo } from "../types.js";
 import { getRegexError, safeRegex } from "./regex.js";
 
@@ -12,6 +13,8 @@ export interface EvalContext {
 	now: Date;
 	/** null = watch provider unavailable; watch rules then evaluate to "unknown". */
 	watch: ((item: LibraryItem) => WatchInfo | null | undefined) | null;
+	/** null = Seerr unavailable; request rules then evaluate to "unknown". */
+	seerr: ((item: LibraryItem) => SeerrRequest[]) | null;
 }
 
 export type FieldKind = "number" | "text" | "select" | "list" | "boolean";
@@ -23,7 +26,7 @@ export interface FieldMeta {
 	optional?: boolean;
 	placeholder?: string;
 }
-export type RuleGroup = "Library" | "File" | "Watch history";
+export type RuleGroup = "Library" | "File" | "Watch history" | "Requests";
 
 export interface RuleTypeDef {
 	type: string;
@@ -32,7 +35,7 @@ export interface RuleTypeDef {
 	description: string;
 	fields: FieldMeta[];
 	schema: z.ZodType<Record<string, unknown>>;
-	needs?: "files" | "watch";
+	needs?: "files" | "watch" | "seerr" | "watch+seerr";
 	evaluate(item: LibraryItem, params: any, ctx: EvalContext): Eval;
 }
 
@@ -384,9 +387,9 @@ const defs: RuleTypeDef[] = [
 		evaluate: (item, p) => anyFile(item, `Release group is ${p.groups.join("/")}`, (f) => (f.releaseGroup === null ? null : inList(f.releaseGroup, p.groups))),
 	},
 
-	// ── Watch history (Tautulli) ───────────────────────────────────────────
+	// ── Watch history (Plex / Tautulli) ───────────────────────────────────────────
 	{
-		type: "tautulli_last_watched",
+		type: "last_watched",
 		label: "Last watched",
 		group: "Watch history",
 		description:
@@ -415,10 +418,10 @@ const defs: RuleTypeDef[] = [
 		},
 	},
 	{
-		type: "tautulli_watch_count",
+		type: "watch_count",
 		label: "Watch count",
 		group: "Watch history",
-		description: "Total plays recorded in Tautulli.",
+		description: "Total plays recorded across all users.",
 		needs: "watch",
 		fields: [
 			{ name: "operator", label: "Operator", kind: "select", options: ["less_than", "greater_than", "equals"] },
@@ -434,10 +437,10 @@ const defs: RuleTypeDef[] = [
 		},
 	},
 	{
-		type: "tautulli_watched_by",
+		type: "watched_by",
 		label: "Watched by",
 		group: "Watch history",
-		description: "Whether specific Plex users have watched it.",
+		description: "Whether specific users have watched it.",
 		needs: "watch",
 		fields: [
 			{ name: "operator", label: "Operator", kind: "select", options: ["watched_by_any", "not_watched_by_any"] },
@@ -451,7 +454,108 @@ const defs: RuleTypeDef[] = [
 			return check(p.operator === "watched_by_any" ? hit : !hit, `${p.operator === "watched_by_any" ? "Watched by" : "Not watched by"} ${p.users.join("/")}`);
 		},
 	},
+
+	// ── Requests (Seerr) ───────────────────────────────────────────────────
+	{
+		type: "seerr_is_requested",
+		label: "Requested in Seerr",
+		group: "Requests",
+		description: "Whether anyone requested this title through Seerr (declined requests don't count).",
+		needs: "seerr",
+		fields: [{ name: "operator", label: "Operator", kind: "select", options: ["is_requested", "not_requested"] }],
+		schema: z.object({ operator: z.enum(["is_requested", "not_requested"]) }),
+		evaluate(item, p, ctx) {
+			const reqs = seerrOf(item, ctx);
+			if (!reqs) return U("Seerr data unavailable");
+			return check(p.operator === "is_requested" ? reqs.length > 0 : reqs.length === 0, p.operator === "is_requested" ? "Requested in Seerr" : "Not requested in Seerr");
+		},
+	},
+	{
+		type: "seerr_requested_by",
+		label: "Requested by",
+		group: "Requests",
+		description: "Matches Seerr display name, username, Plex name or email.",
+		needs: "seerr",
+		fields: [
+			{ name: "operator", label: "Operator", kind: "select", options: ["any_of", "none_of"] },
+			{ name: "users", label: "Users", kind: "list" },
+		],
+		schema: z.object({ operator: z.enum(["any_of", "none_of"]), users: strList }),
+		evaluate(item, p, ctx) {
+			const reqs = seerrOf(item, ctx);
+			if (!reqs) return U("Seerr data unavailable");
+			const hit = reqs.some((r) => r.requesters.some((n) => inList(n, p.users)));
+			return check(p.operator === "any_of" ? hit : !hit, `${p.operator === "any_of" ? "Requested by" : "Not requested by"} ${p.users.join("/")}`);
+		},
+	},
+	{
+		type: "seerr_request_age",
+		label: "Request age",
+		group: "Requests",
+		description: "Age of the most recent request. Items with no request never match.",
+		needs: "seerr",
+		fields: [
+			{ name: "operator", label: "Operator", kind: "select", options: ["older_than", "newer_than"] },
+			{ name: "days", label: "Days", kind: "number" },
+		],
+		schema: z.object({ operator: z.enum(["older_than", "newer_than"]), days: z.number().int().min(1) }),
+		evaluate(item, p, ctx) {
+			const reqs = seerrOf(item, ctx);
+			if (!reqs) return U("Seerr data unavailable");
+			const label = `Last requested ${p.operator === "older_than" ? "more" : "less"} than ${p.days} days ago`;
+			if (!reqs.length) return F(`${label} (never requested)`);
+			const newest = Math.max(...reqs.map((r) => r.createdAt.getTime()));
+			const age = daysAgo(new Date(newest), ctx.now);
+			return check(p.operator === "older_than" ? age > p.days : age < p.days, `${label} (${age} days)`);
+		},
+	},
+	{
+		type: "seerr_request_count",
+		label: "Request count",
+		group: "Requests",
+		description: "Number of (non-declined) requests.",
+		needs: "seerr",
+		fields: [
+			{ name: "operator", label: "Operator", kind: "select", options: ["less_than", "greater_than", "equals"] },
+			{ name: "count", label: "Requests", kind: "number" },
+		],
+		schema: z.object({ operator: z.enum(["less_than", "greater_than", "equals"]), count: z.number().int().min(0) }),
+		evaluate(item, p, ctx) {
+			const reqs = seerrOf(item, ctx);
+			if (!reqs) return U("Seerr data unavailable");
+			const n = reqs.length;
+			const ok = p.operator === "less_than" ? n < p.count : p.operator === "greater_than" ? n > p.count : n === p.count;
+			return check(ok, `Request count ${p.operator.replace("_", " ")} ${p.count} (${n})`);
+		},
+	},
+	{
+		type: "seerr_requester_watched",
+		label: "Requester has watched",
+		group: "Requests",
+		description:
+			"Combines Seerr and watch history: has the person who requested it watched it? Items with no request never match either option.",
+		needs: "watch+seerr",
+		fields: [{ name: "operator", label: "Operator", kind: "select", options: ["requester_watched", "requester_not_watched"] }],
+		schema: z.object({ operator: z.enum(["requester_watched", "requester_not_watched"]) }),
+		evaluate(item, p, ctx) {
+			const reqs = seerrOf(item, ctx);
+			if (!reqs) return U("Seerr data unavailable");
+			const w = watchOf(item, ctx);
+			if (!w) return U("Watch history unavailable");
+			if (!reqs.length) return F("No requester");
+			const names = reqs.flatMap((r) => r.requesters);
+			if (!names.length) return U("Requester has no name to match against watch history");
+			const watched = w.watchedBy.some((u) => inList(u, names));
+			return check(p.operator === "requester_watched" ? watched : !watched, p.operator === "requester_watched" ? "Requester has watched it" : "Requester has not watched it");
+		},
+	},
 ];
+
+function seerrOf(item: LibraryItem, ctx: EvalContext): SeerrRequest[] | null {
+	if (!ctx.seerr) return null;
+	if (item.tmdbId === null && item.tvdbId === null) return null;
+	return ctx.seerr(item);
+}
 
 function ratingEval(value: number | null, name: string, p: { operator: string; score?: number }): Eval {
 	if (p.operator === "unrated") return check(value === null || value === 0, `${name} is missing`);

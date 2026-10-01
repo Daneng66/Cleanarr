@@ -252,7 +252,7 @@ async function renderHistory() {
 // ── Instances ──────────────────────────────────────────────────────────────
 async function renderInstances() {
 	const list = await api("/instances");
-	const out = h("div", {}, h("div", { class: "row" }, h("div", {}, h("h1", {}, "Instances"), h("p", { class: "sub" }, "Sonarr and Radarr hold your library. Tautulli (optional) provides watch history.")), h("span", { class: "spacer" }), h("button", { class: "primary", onclick: () => editInstance() }, "Add instance")));
+	const out = h("div", {}, h("div", { class: "row" }, h("div", {}, h("h1", {}, "Instances"), h("p", { class: "sub" }, "Sonarr and Radarr hold your library. Plex (or Tautulli) provides watch history and Seerr provides requests; both are optional.")), h("span", { class: "spacer" }), h("button", { class: "primary", onclick: () => editInstance() }, "Add instance")));
 	if (!list.length) return out.appendChild(h("div", { class: "card empty" }, "No instances yet.")), out;
 	const test = (i) => (e) => guard(e.target, async () => { const r = await api(`/instances/${i.id}/test`, { method: "POST" }); toast(r.ok ? `${i.name}: connected` : `${i.name}: ${r.error}`); });
 	const remove = async (i) => { if (!confirm(`Remove ${i.name}?`)) return; try { await api(`/instances/${i.id}`, { method: "DELETE" }); route(); } catch (e) { fail(e); } };
@@ -268,8 +268,12 @@ async function renderInstances() {
 }
 function editInstance(inst) {
 	const name = h("input", { value: inst?.name || "" });
-	const type = h("select", { disabled: !!inst }, ["sonarr", "radarr", "tautulli"].map((t) => h("option", { value: t, selected: t === inst?.type }, t)));
-	const url = h("input", { value: inst?.url || "", placeholder: "http://radarr:7878" });
+	const type = h("select", { disabled: !!inst }, ["sonarr", "radarr", "plex", "seerr", "tautulli"].map((t) => h("option", { value: t, selected: t === inst?.type }, t)));
+	const keyLabel = h("label", {}, "API key");
+	const hint = h("div", { class: "muted small" });
+	const paintType = () => { keyLabel.textContent = type.value === "plex" ? "X-Plex-Token" : "API key"; hint.textContent = type.value === "plex" ? "Use the server owner's token so history for all users is visible. Default URL port is 32400." : type.value === "seerr" ? "Overseerr / Jellyseerr / Seerr API key (Settings → General)." : ""; };
+	type.addEventListener("change", paintType); paintType();
+	const url = h("input", { value: inst?.url || "", placeholder: "http://host:port" });
 	const key = h("input", { type: "password", placeholder: inst ? "leave blank to keep the current key" : "API key", autocomplete: "off" });
 	const enabled = h("input", { type: "checkbox", checked: inst ? inst.enabled : true });
 	const test = h("button", { onclick: (e) => guard(e.target, async () => { if (!key.value && !inst) throw new Error("Enter an API key first"); const r = key.value ? await api("/instances/test", { method: "POST", body: { type: type.value, url: url.value, apiKey: key.value } }) : await api(`/instances/${inst.id}/test`, { method: "POST" }); toast(r.ok ? "Connected" : r.error); }) }, "Test connection");
@@ -278,7 +282,7 @@ function editInstance(inst) {
 		await api(inst ? `/instances/${inst.id}` : "/instances", { method: inst ? "PUT" : "POST", body: inst ? body : { ...body, type: type.value } });
 		dialog.close(); route();
 	}) }, "Save");
-	dialog.replaceChildren(h("h1", {}, inst ? "Edit instance" : "Add instance"), h("div", { class: "field" }, h("label", {}, "Name"), name), h("div", { class: "field" }, h("label", {}, "Type"), type), h("div", { class: "field" }, h("label", {}, "URL"), url), h("div", { class: "field" }, h("label", {}, "API key"), key),
+	dialog.replaceChildren(h("h1", {}, inst ? "Edit instance" : "Add instance"), h("div", { class: "field" }, h("label", {}, "Name"), name), h("div", { class: "field" }, h("label", {}, "Type"), type), h("div", { class: "field" }, h("label", {}, "URL"), url), h("div", { class: "field" }, keyLabel, key, hint),
 		h("div", { class: "field" }, h("label", { class: "check" }, enabled, "Enabled")), h("div", { class: "row end" }, h("button", { onclick: () => dialog.close() }, "Cancel"), test, save));
 	dialog.showModal();
 }
