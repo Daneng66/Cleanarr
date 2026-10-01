@@ -93,14 +93,14 @@ describe("safety", () => {
 		expect(p.candidates).toHaveLength(0);
 		expect(p.skipped[0]?.message).toMatch(/could not be evaluated/);
 	});
-	it("watch rules never match when Tautulli is down", async () => {
+	it("watch rules never match when Plex is down", async () => {
 		const s = setup({ radarr: [movie(1)], watch: "fail" });
 		live(s);
 		s.rule("unwatched", { type: "last_watched", params: { operator: "not_watched_in_days", days: 30 } });
 		await s.engine.run({ trigger: "manual" });
 		expect(s.radarrApi.calls).toEqual([]);
 	});
-	it("uses Tautulli data when available", async () => {
+	it("uses Plex data when available", async () => {
 		const s = setup({ radarr: [movie(1), movie(2)], watch: { "movie:1001": { lastWatchedAt: new Date(NOW.getTime() - 5 * DAY), watchCount: 3, watchedBy: ["a"] } } });
 		live(s);
 		s.rule("unwatched", { type: "last_watched", params: { operator: "not_watched_in_days", days: 30 } });
@@ -412,5 +412,13 @@ describe("Plex + Seerr stack", () => {
 		const r = await s.engine.approve(a!.id, { actor: "me" });
 		expect(r.status).toBe("blocked");
 		expect(s.radarrApi.calls).toEqual([]);
+	});
+});
+
+describe("preview library summary", () => {
+	it("totals movies, series, episodes and missing files", async () => {
+		const s = setup({ radarr: [movie(1), movie(2, { hasFile: false, movieFile: null, sizeOnDisk: 0 })], sonarr: [series(1)] });
+		const p = await s.engine.preview();
+		expect(p.library).toEqual({ movies: 2, series: 1, files: 20, missing: 1, movieBytes: 10 * GB, seriesBytes: 40 * GB, totalBytes: 50 * GB });
 	});
 });

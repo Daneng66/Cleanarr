@@ -25,6 +25,8 @@ export interface FieldMeta {
 	options?: string[];
 	optional?: boolean;
 	placeholder?: string;
+	/** Operator values that make this field irrelevant; the editor hides it and sends nothing for it. */
+	hideFor?: string[];
 }
 export type RuleGroup = "Library" | "File" | "Watch history" | "Requests";
 
@@ -46,6 +48,35 @@ const U = (reason: string): Eval => ({ state: "unknown", reason });
 const check = (ok: boolean, reason: string): Eval => (ok ? T(reason) : F(reason));
 const lc = (s: string) => s.toLowerCase();
 const inList = (value: string | null, list: string[]) => value !== null && list.some((x) => lc(x) === lc(value));
+/**
+ * Ratings that mean "fine for children" in the country Radarr/Sonarr reports them for. Matched without knowing the
+ * country, so a value that is a kids' rating anywhere counts: for a protect rule that errs toward keeping more.
+ * Deliberately absent: "A" (all ages in Spain, adults-only in India), "12", "13", PG-13, TV-PG.
+ */
+export const KIDS_RATINGS_BY_COUNTRY: Record<string, string[]> = {
+	US: ["G", "PG", "TV-Y", "TV-Y7", "TV-Y7-FV", "TV-G"],
+	GB: ["U", "PG", "Uc"],
+	IE: ["G", "PG"],
+	CA: ["G", "PG", "C", "C8"],
+	AU: ["G", "PG", "P", "C"],
+	NZ: ["G", "PG"],
+	DE: ["0", "6", "FSK 0", "FSK 6"],
+	AT: ["0", "6"],
+	FR: ["U", "TP", "Tous publics"],
+	NL: ["AL", "6"],
+	BE: ["AL", "KT", "6"],
+	ES: ["APTA", "TP", "7"],
+	IT: ["T"],
+	SE: ["Btl", "7"],
+	NO: ["6"],
+	DK: ["7"],
+	FI: ["S", "K-7"],
+	BR: ["L", "10"],
+	JP: ["G"],
+	KR: ["ALL", "All"],
+	IN: ["U"],
+};
+const KIDS_RATINGS = new Set(Object.values(KIDS_RATINGS_BY_COUNTRY).flat().map((r) => r.toLowerCase()));
 const gb = (bytes: number) => `${(bytes / 1024 ** 3).toFixed(1)} GB`;
 const daysAgo = (d: Date, now: Date) => Math.floor((now.getTime() - d.getTime()) / DAY);
 
@@ -114,7 +145,7 @@ const defs: RuleTypeDef[] = [
 		description: "Rating reported by Radarr (TMDb) or Sonarr.",
 		fields: [
 			{ name: "operator", label: "Operator", kind: "select", options: ["less_than", "greater_than", "unrated"] },
-			{ name: "score", label: "Score (0–10)", kind: "number", optional: true },
+			{ name: "score", label: "Score (0–10)", kind: "number", optional: true, hideFor: ["unrated"] },
 		],
 		schema: z
 			.object({ operator: z.enum(["less_than", "greater_than", "unrated"]), score: z.number().min(0).max(10).optional() })
@@ -128,7 +159,7 @@ const defs: RuleTypeDef[] = [
 		description: "IMDb rating (Radarr only).",
 		fields: [
 			{ name: "operator", label: "Operator", kind: "select", options: ["less_than", "greater_than", "unrated"] },
-			{ name: "score", label: "Score (0–10)", kind: "number", optional: true },
+			{ name: "score", label: "Score (0–10)", kind: "number", optional: true, hideFor: ["unrated"] },
 		],
 		schema: z
 			.object({ operator: z.enum(["less_than", "greater_than", "unrated"]), score: z.number().min(0).max(10).optional() })
@@ -177,6 +208,27 @@ const defs: RuleTypeDef[] = [
 			return p.operator === "includes_any"
 				? check(hit, `Genre includes ${p.genres.join("/")}`)
 				: check(!hit, `Genre excludes ${p.genres.join("/")}`);
+		},
+	},
+	{
+		type: "certification",
+		label: "Content rating",
+		group: "Library",
+		description: "Age rating from Radarr/Sonarr. \"Suitable for kids\" recognises children's ratings from many countries. Items without a rating are unknown.",
+		fields: [
+			{ name: "operator", label: "Operator", kind: "select", options: ["suitable_for_kids", "includes_any", "excludes_all"] },
+			{ name: "ratings", label: "Ratings", kind: "list", placeholder: "e.g. PG-13, TV-14", optional: true, hideFor: ["suitable_for_kids"] },
+		],
+		schema: z
+			.object({ operator: z.enum(["suitable_for_kids", "includes_any", "excludes_all"]), ratings: strList.optional() })
+			.refine((v) => v.operator === "suitable_for_kids" || v.ratings !== undefined, { message: "ratings are required" }),
+		evaluate(item, p) {
+			if (item.certification === null) return U("No content rating");
+			if (p.operator === "suitable_for_kids") return check(KIDS_RATINGS.has(lc(item.certification)), `Rated ${item.certification}`);
+			const hit = inList(item.certification, p.ratings as string[]);
+			return p.operator === "includes_any"
+				? check(hit, `Rated ${item.certification} (one of ${(p.ratings as string[]).join("/")})`)
+				: check(!hit, `Rated ${item.certification} (not ${(p.ratings as string[]).join("/")})`);
 		},
 	},
 	{
@@ -387,7 +439,7 @@ const defs: RuleTypeDef[] = [
 		evaluate: (item, p) => anyFile(item, `Release group is ${p.groups.join("/")}`, (f) => (f.releaseGroup === null ? null : inList(f.releaseGroup, p.groups))),
 	},
 
-	// ── Watch history (Plex / Tautulli) ───────────────────────────────────────────
+	// ── Watch history (Plex) ───────────────────────────────────────────
 	{
 		type: "last_watched",
 		label: "Last watched",

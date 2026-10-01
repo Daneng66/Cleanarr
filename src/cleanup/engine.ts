@@ -71,6 +71,18 @@ interface Plan {
 	evaluated: number;
 }
 
+/** Library totals for the dashboard. Series `files` counts episode files. */
+export function librarySummary(items: LibraryItem[]) {
+	const s = { movies: 0, series: 0, files: 0, missing: 0, movieBytes: 0, seriesBytes: 0, totalBytes: 0 };
+	for (const i of items) {
+		if (i.kind === "movie") (s.movies++, (s.movieBytes += i.sizeOnDisk));
+		else (s.series++, (s.seriesBytes += i.sizeOnDisk), (s.files += i.fileCount));
+		if (!i.hasFile) s.missing++;
+		s.totalBytes += i.sizeOnDisk;
+	}
+	return s;
+}
+
 export function createEngine(deps: EngineDeps) {
 	const { store, log } = deps;
 	const now = deps.now ?? (() => new Date());
@@ -110,15 +122,15 @@ export function createEngine(deps: EngineDeps) {
 	}
 
 	/**
-	 * Loads watch history (Plex/Tautulli) and Seerr requests when rules need them. Any provider
+	 * Loads watch history (Plex) and Seerr requests when rules need them. Any provider
 	 * failure makes that evidence unavailable as a whole, so dependent rules evaluate to "unknown".
 	 */
 	async function loadEvidence(needs: { watch: boolean; seerr: boolean }): Promise<{ watch: EvalContext["watch"]; seerr: EvalContext["seerr"]; warnings: string[] }> {
 		const out: { watch: EvalContext["watch"]; seerr: EvalContext["seerr"]; warnings: string[] } = { watch: null, seerr: null, warnings: [] };
 		const enabled = store.instances.list().filter((i) => i.enabled);
 		if (needs.watch) {
-			const sources = enabled.filter((i) => i.type === "plex" || i.type === "tautulli");
-			if (!sources.length) out.warnings.push("Watch-history rules are configured but no Plex or Tautulli instance is enabled; those rules cannot match");
+			const sources = enabled.filter((i) => i.type === "plex");
+			if (!sources.length) out.warnings.push("Watch-history rules are configured but no Plex instance is enabled; those rules cannot match");
 			else {
 				try {
 					const loaded = await Promise.all(sources.map((i) => deps.watch(i).load()));
@@ -595,6 +607,7 @@ export function createEngine(deps: EngineDeps) {
 			candidates: ordered.map((c) => detail(c, "flagged")),
 			skipped: [...p.skipped, ...skipped],
 			totalBytes: ordered.reduce((n, c) => n + c.item.sizeOnDisk, 0),
+			library: librarySummary(snap.items),
 		};
 	}
 

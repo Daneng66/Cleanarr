@@ -147,7 +147,7 @@ describe("migration 2", () => {
 		db.prepare("INSERT INTO rules (id,name,expression,created_at,updated_at) VALUES ('r1','old',?,'2026-01-01','2026-01-01')").run(expr);
 		expect(() => db.prepare("INSERT INTO instances (id,name,type,url,api_key_enc,created_at) VALUES ('p','P','plex','http://p','x','now')").run()).toThrow(/CHECK/);
 
-		migrate(db);
+		migrate(db, 2);
 
 		const types = (JSON.parse((db.prepare("SELECT expression FROM rules WHERE id='r1'").get() as { expression: string }).expression).of as Array<{ type: string }>).map((n) => n.type);
 		expect(types).toEqual(["last_watched", "watch_count", "watched_by", "age"]);
@@ -155,5 +155,21 @@ describe("migration 2", () => {
 		expect(() => db.prepare("INSERT INTO instances (id,name,type,url,api_key_enc,created_at) VALUES ('p','P','plex','http://p','x','now')").run()).not.toThrow();
 		expect(() => db.prepare("INSERT INTO instances (id,name,type,url,api_key_enc,created_at) VALUES ('s','S','seerr','http://s','x','now')").run()).not.toThrow();
 		expect(db.pragma("user_version", { simple: true })).toBe(2);
+	});
+});
+
+describe("migration 3", () => {
+	it("drops Tautulli instances and its cache, keeps everything else", () => {
+		const db = new Database(":memory:");
+		migrate(db, 2);
+		db.prepare("INSERT INTO instances (id,name,type,url,api_key_enc,created_at) VALUES ('t','T','tautulli','http://t','x','now')").run();
+		db.prepare("INSERT INTO instances (id,name,type,url,api_key_enc,created_at) VALUES ('p','P','plex','http://p','x','now')").run();
+
+		migrate(db);
+
+		expect(db.prepare("SELECT id FROM instances").all()).toEqual([{ id: "p" }]);
+		expect(db.prepare("SELECT name FROM sqlite_master WHERE name='tautulli_guid_cache'").get()).toBeUndefined();
+		expect(() => db.prepare("INSERT INTO instances (id,name,type,url,api_key_enc,created_at) VALUES ('t2','T','tautulli','http://t','x','now')").run()).toThrow(/CHECK/);
+		expect(db.pragma("user_version", { simple: true })).toBe(3);
 	});
 });

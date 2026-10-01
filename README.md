@@ -2,7 +2,7 @@
 
 Smart media library cleanup and storage optimization for the *Arr ecosystem.
 
-Cleanarr connects to Sonarr and Radarr, reads watch history from Plex (or Tautulli) and requests from Seerr
+Cleanarr connects to Sonarr and Radarr, reads watch history from Plex and requests from Seerr
 (Overseerr/Jellyseerr), evaluates your rules against your library, and removes, unmonitors, or deletes the files of items that match,
 with approvals, an audit trail, and several layers of safety so a bad rule can't silently wipe your library.
 
@@ -23,7 +23,7 @@ npm run build
 CLEANARR_API_KEY=change-me npm start
 ```
 
-1. **Instances**: add Sonarr and Radarr, plus Plex (watch history) and Seerr (requests) if you want rules based on them. Use the Plex server **owner's** X-Plex-Token so history for all users is visible. Tautulli can be used instead of Plex.
+1. **Instances**: add Sonarr and Radarr, plus Plex (watch history) and Seerr (requests) if you want rules based on them. Use the Plex server **owner's** X-Plex-Token so history for all users is visible.
 2. **Rules**: create a rule, e.g. *added > 365 days ago* AND *rating < 6*.
 3. **Dashboard → Preview**: see exactly what would match and why (**Why?** shows the per-condition breakdown).
 4. **Settings**: when you trust the rules, turn off dry-run. Leave **Require approval** on to review each removal.
@@ -56,9 +56,9 @@ Rules are evaluated in priority order; the first matching cleanup rule wins.
 
 **Conditions**
 
-- *Library:* age in library, size on disk, rating, IMDb rating, release status, monitored/unmonitored, genre, release year, no files, quality profile, original language, tag, path, runtime
+- *Library:* age in library, size on disk, rating, IMDb rating, content rating (G, PG, TV-Y7…), release status, monitored/unmonitored, genre, release year, no files, quality profile, original language, tag, path, runtime
 - *File metadata:* resolution, video codec, audio codec, audio channels, HDR type, custom format score, release group
-- *Watch history (Plex or Tautulli):* last watched, watch count, watched by
+- *Watch history (Plex):* last watched, watch count, watched by
 - *Requests (Seerr):* requested or not, requested by, request age, request count, and **requester has watched it** (combines Seerr and Plex: e.g. "the person who asked for this has watched it, and it's been in the library 100+ days")
 
 Example (JSON, as accepted by the API):
@@ -110,7 +110,7 @@ npm test            # vitest: rules, engine safety paths, Plex/Seerr providers, 
 ```
 
 Architecture: `src/rules` (condition registry + three-valued evaluator), `src/cleanup/engine.ts` (planning, revalidation,
-approvals, runs), `src/store.ts` (SQLite persistence), `src/arr`, `src/watch` (Plex, Tautulli) and `src/seerr` (service clients), `src/server.ts` (Fastify API + UI),
+approvals, runs), `src/store.ts` (SQLite persistence), `src/arr`, `src/watch` (Plex) and `src/seerr` (service clients), `src/server.ts` (Fastify API + UI),
 `src/web` (dependency-free UI).
 
 ## Notes for a Plex + Sonarr + Radarr + Seerr + SABnzbd stack

@@ -6,6 +6,8 @@ import { safeRegex } from "../src/rules/regex.js";
 import { DAY, GB, NOW, movie, series } from "./helpers.js";
 import type { EvalContext } from "../src/rules/registry.js";
 import type { RuleRecord, WatchInfo } from "../src/types.js";
+import { describeTemplates, RULE_TEMPLATES } from "../src/rules/templates.js";
+import { ruleCreate } from "../src/routes/schemas.js";
 
 const maps = { tags: new Map([[1, "keep"]]), profiles: new Map([[1, "HD-1080p"]]) };
 const item = (over = {}) => normalizeItem(movie(1, over), { instanceId: "i", service: "radarr", ...maps });
@@ -172,5 +174,47 @@ describe("seerr rules", () => {
 		it("requires both providers", () => {
 			expect(requirements(parseExpression(p("requester_watched")))).toEqual({ files: false, watch: true, seerr: true });
 		});
+	});
+});
+
+describe("content rating", () => {
+	const kids = RULE_TEMPLATES.find((x) => x.id === "protect-kids")!.expression;
+	it("matches listed ratings case-insensitively and is unknown without one", () => {
+		expect(ev({ type: "certification", params: { operator: "includes_any", ratings: ["pg"] } }, item({ certification: "PG" })).state).toBe("true");
+		expect(ev({ type: "certification", params: { operator: "includes_any", ratings: ["G", "PG"] } }, item({ certification: "PG-13" })).state).toBe("false");
+		expect(ev({ type: "certification", params: { operator: "excludes_all", ratings: ["R"] } }, item({ certification: "PG" })).state).toBe("true");
+		expect(ev({ type: "certification", params: { operator: "includes_any", ratings: ["G"] } }, item({ certification: undefined })).state).toBe("unknown");
+	});
+	it("suitable_for_kids understands children's ratings from other countries, never PG-13/12/A", () => {
+		const k = (cert: string) => ev({ type: "certification", params: { operator: "suitable_for_kids" } }, item({ certification: cert })).state;
+		for (const c of ["G", "PG", "U", "FSK 6", "6", "AL", "TV-Y7", "tv-g", "Btl", "L"]) expect(k(c), c).toBe("true");
+		for (const c of ["PG-13", "12", "12A", "A", "R", "15", "TV-PG", "TV-MA", "FSK 16"]) expect(k(c), c).toBe("false");
+		expect(() => parseExpression({ type: "certification", params: { operator: "includes_any" } })).toThrow();
+	});
+	it("kids template: a children's rating protects, PG-13 and R do not, no rating protects as unknown", () => {
+		expect(ev(kids, item({ certification: "PG" })).state).toBe("true");
+		expect(ev(kids, item({ certification: "PG-13", genres: ["Family"] })).state).toBe("false");
+		expect(ev(kids, item({ certification: "R" })).state).toBe("false");
+		expect(ev(kids, item({ certification: undefined })).state).toBe("unknown");
+	});
+	it("kids shows template: TV-Y7 protects, TV-PG and TV-MA do not", () => {
+		const shows = RULE_TEMPLATES.find((x) => x.id === "protect-kids-shows")!.expression;
+		const show = (over = {}) => normalizeItem(series(1, over), { instanceId: "i", service: "sonarr", ...maps });
+		expect(ev(shows, show({ certification: "TV-Y7", genres: ["Animation"] })).state).toBe("true");
+		expect(ev(shows, show({ certification: "TV-PG", genres: ["Children"] })).state).toBe("false");
+		expect(ev(shows, show({ certification: "TV-MA", genres: ["Drama"] })).state).toBe("false");
+	});
+});
+
+describe("rule templates", () => {
+	it("every template is a valid rule as the create API would accept it", () => {
+		for (const t of RULE_TEMPLATES) expect(() => ruleCreate.parse({ name: t.title, mode: t.mode, action: t.action, expression: t.expression, serviceFilter: t.serviceFilter ?? null }), t.id).not.toThrow();
+	});
+	it("has unique ids and says what each one needs", () => {
+		expect(new Set(RULE_TEMPLATES.map((t) => t.id)).size).toBe(RULE_TEMPLATES.length);
+		const byId = Object.fromEntries(describeTemplates().map((t) => [t.id, t.needs]));
+		expect(byId.stale).toMatchObject({ watch: true, seerr: false });
+		expect(byId["requester-done"]).toMatchObject({ watch: true, seerr: true });
+		expect(byId["protect-keep-tag"]).toMatchObject({ watch: false, seerr: false });
 	});
 });

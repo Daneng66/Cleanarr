@@ -1,6 +1,10 @@
 import type { FetchFn } from "../arr/client.js";
 import type { Instance, LibraryItem, WatchInfo } from "../types.js";
-import type { WatchProvider } from "./tautulli.js";
+
+export interface WatchProvider {
+	/** Resolves lookup for the given items; throws when the history can't be read completely. */
+	load(): Promise<{ lookup: (item: LibraryItem) => WatchInfo | undefined; warnings: string[] }>;
+}
 
 const PAGE = 500;
 /** Hard ceilings so a runaway library/history can't hang a run; exceeding them fails closed. */

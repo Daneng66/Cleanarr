@@ -1,5 +1,5 @@
 export type Service = "sonarr" | "radarr";
-export type InstanceType = Service | "plex" | "tautulli" | "seerr";
+export type InstanceType = Service | "plex" | "seerr";
 export type ItemKind = "movie" | "series";
 export type CleanupAction = "delete" | "unmonitor" | "delete_files";
 export type RuleMode = "cleanup" | "retention";
@@ -47,6 +47,8 @@ export interface LibraryItem {
 	sizeOnDisk: number;
 	added: Date | null;
 	genres: string[];
+	/** Age rating as Radarr/Sonarr report it (e.g. PG-13, TV-Y7); null when the item has none. */
+	certification: string | null;
 	tags: string[];
 	rating: number | null;
 	imdbRating: number | null;

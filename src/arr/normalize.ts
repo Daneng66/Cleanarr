@@ -77,6 +77,7 @@ export function normalizeItem(
 		sizeOnDisk: num(isMovie ? raw.sizeOnDisk : stats.sizeOnDisk) ?? 0,
 		added: date(raw.added),
 		genres: Array.isArray(raw.genres) ? raw.genres.map(String) : [],
+		certification: str(raw.certification),
 		tags: Array.isArray(raw.tags)
 			? raw.tags.map((t: number) => ctx.tags.get(t)).filter((t: string | undefined): t is string => !!t)
 			: [],

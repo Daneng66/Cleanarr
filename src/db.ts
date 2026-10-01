@@ -148,6 +148,23 @@ UPDATE rules SET expression = REPLACE(REPLACE(REPLACE(expression,
 	'"tautulli_watch_count"', '"watch_count"'),
 	'"tautulli_watched_by"', '"watched_by"');
 `,
+	// 3: Tautulli support removed; Plex is the only watch-history source.
+	`
+DELETE FROM instances WHERE type = 'tautulli';
+CREATE TABLE instances_new (
+	id TEXT PRIMARY KEY,
+	name TEXT NOT NULL,
+	type TEXT NOT NULL CHECK (type IN ('sonarr','radarr','plex','seerr')),
+	url TEXT NOT NULL,
+	api_key_enc TEXT NOT NULL,
+	enabled INTEGER NOT NULL DEFAULT 1,
+	created_at TEXT NOT NULL
+);
+INSERT INTO instances_new SELECT * FROM instances;
+DROP TABLE instances;
+ALTER TABLE instances_new RENAME TO instances;
+DROP TABLE tautulli_guid_cache;
+`,
 ];
 
 export function openDb(path: string): Db {

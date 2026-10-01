@@ -6,6 +6,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 import { ZodError } from "zod";
 import { ConflictError, DryRunError, RunInProgressError, createEngine, type Engine } from "./cleanup/engine.js";
 import { describeRuleTypes, } from "./rules/registry.js";
+import { describeTemplates } from "./rules/templates.js";
 import { parseExpression } from "./rules/expression.js";
 import * as S from "./routes/schemas.js";
 import type { Store } from "./store.js";
@@ -68,6 +69,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
 
 		api.get("/auth", async () => ({ required: !!deps.apiKey }));
 		api.get("/rule-types", async () => describeRuleTypes());
+		api.get("/rule-templates", async () => describeTemplates());
 
 		// Instances. API keys are write-only: never returned.
 		const publicInstance = (i: { id: string; name: string; type: string; url: string; enabled: boolean }) => ({ id: i.id, name: i.name, type: i.type, url: i.url, enabled: i.enabled });

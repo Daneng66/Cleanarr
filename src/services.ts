@@ -2,13 +2,13 @@ import { createArrClient } from "./arr/client.js";
 import type { Db } from "./db.js";
 import { createSeerrProvider, testSeerr } from "./seerr/seerr.js";
 import type { Instance } from "./types.js";
-import { createWatchProvider, testPlex, testTautulli } from "./watch/index.js";
+import { createWatchProvider, testPlex } from "./watch/index.js";
 
 /** Production wiring from stored instances to their service clients. */
 export function createProviders(db: Db) {
 	return {
 		arr: (i: Instance) => createArrClient(i),
-		watch: (i: Instance) => createWatchProvider(i, db),
+		watch: (i: Instance) => createWatchProvider(i),
 		seerr: (i: Instance) => createSeerrProvider(i),
 	};
 }
@@ -18,7 +18,6 @@ export async function testConnection(i: Pick<Instance, "type" | "url" | "apiKey"
 	try {
 		if (i.type === "sonarr" || i.type === "radarr") await createArrClient(i).status();
 		else if (i.type === "plex") await testPlex(i);
-		else if (i.type === "tautulli") await testTautulli(i);
 		else await testSeerr(i);
 		return { ok: true };
 	} catch (e) {
