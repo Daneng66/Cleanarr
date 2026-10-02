@@ -79,6 +79,10 @@ interface Plan {
 	evaluated: number;
 }
 
+/** Radarr/Sonarr status meaning nothing has aired/released yet, so a missing file isn't actually missing. */
+const UNRELEASED_STATUS = new Set(["tba", "announced", "inCinemas", "upcoming"]);
+const isReleased = (i: LibraryItem) => i.released !== false && !UNRELEASED_STATUS.has(i.status ?? "");
+
 /** Library totals for the dashboard. Series `files` counts episode files. */
 export function librarySummary(items: LibraryItem[]) {
 	const s = { movies: 0, series: 0, files: 0, missing: 0, movieBytes: 0, seriesBytes: 0, totalBytes: 0 };
@@ -86,10 +90,34 @@ export function librarySummary(items: LibraryItem[]) {
 		if (i.kind === "season") continue;
 		if (i.kind === "movie") (s.movies++, (s.movieBytes += i.sizeOnDisk));
 		else (s.series++, (s.seriesBytes += i.sizeOnDisk), (s.files += i.fileCount));
-		if (!i.hasFile) s.missing++;
+		if (!i.hasFile && isReleased(i)) s.missing++;
 		s.totalBytes += i.sizeOnDisk;
 	}
 	return s;
+}
+
+export interface MissingRow {
+	instanceId: string;
+	arrItemId: number;
+	itemType: "movie" | "series";
+	title: string;
+	year: number | null;
+	poster: string | null;
+	monitored: boolean;
+	added: string | null;
+	certification: string | null;
+}
+
+/** Items with nothing on disk, for the "Missing files" drill-down. */
+export function missingItems(items: LibraryItem[]): MissingRow[] {
+	return items
+		.filter((i): i is LibraryItem & { kind: "movie" | "series" } => i.kind !== "season" && !i.hasFile && isReleased(i))
+		.map((i) => ({ instanceId: i.instanceId, arrItemId: i.arrId, itemType: i.kind, title: i.title, year: i.year, poster: i.poster, monitored: i.monitored, added: i.added ? i.added.toISOString() : null, certification: i.certification }));
+}
+
+/** Sonarr status meaning "finished, won't get new episodes". Cleanarr never fully deletes a series in any other status. */
+function seriesNotFinished(item: LibraryItem): boolean {
+	return item.kind === "series" && item.status !== "ended" && item.status !== "deleted";
 }
 
 export function createEngine(deps: EngineDeps) {
@@ -131,24 +159,39 @@ export function createEngine(deps: EngineDeps) {
 		};
 	}
 
+	/** First Plex source that has a content rating for the item wins. */
+	function combineCert(lookups: Array<((i: LibraryItem) => string | undefined) | undefined>): (i: LibraryItem) => string | undefined {
+		const fns = lookups.filter((f): f is (i: LibraryItem) => string | undefined => !!f);
+		return (item) => {
+			for (const f of fns) {
+				const v = f(item);
+				if (v) return v;
+			}
+			return undefined;
+		};
+	}
+
 	/**
 	 * Loads watch history (Plex) and Seerr requests when rules need them. Any provider
 	 * failure makes that evidence unavailable as a whole, so dependent rules evaluate to "unknown".
+	 * Plex content ratings are loaded whenever Plex is connected (regardless of `needs.watch`) so
+	 * items without their own certification can fall back to Plex's.
 	 */
-	async function loadEvidence(needs: { watch: boolean; seerr: boolean }): Promise<{ watch: EvalContext["watch"]; seerr: EvalContext["seerr"]; warnings: string[] }> {
-		const out: { watch: EvalContext["watch"]; seerr: EvalContext["seerr"]; warnings: string[] } = { watch: null, seerr: null, warnings: [] };
+	async function loadEvidence(needs: { watch: boolean; seerr: boolean }): Promise<{ watch: EvalContext["watch"]; seerr: EvalContext["seerr"]; cert: ((i: LibraryItem) => string | undefined) | null; warnings: string[] }> {
+		const out: { watch: EvalContext["watch"]; seerr: EvalContext["seerr"]; cert: ((i: LibraryItem) => string | undefined) | null; warnings: string[] } = { watch: null, seerr: null, cert: null, warnings: [] };
 		const enabled = store.instances.list().filter((i) => i.enabled);
-		if (needs.watch) {
-			const sources = enabled.filter((i) => i.type === "plex");
-			if (!sources.length) out.warnings.push("Watch-history rules are configured but no Plex instance is enabled; those rules cannot match");
-			else {
-				try {
-					const loaded = await Promise.all(sources.map((i) => deps.watch(i).load()));
+		const plexSources = enabled.filter((i) => i.type === "plex");
+		if (needs.watch && !plexSources.length) out.warnings.push("Watch-history rules are configured but no Plex instance is enabled; those rules cannot match");
+		if (plexSources.length) {
+			try {
+				const loaded = await Promise.all(plexSources.map((i) => deps.watch(i).load()));
+				if (needs.watch) {
 					out.watch = combineWatch(loaded.map((l) => l.lookup));
 					out.warnings.push(...loaded.flatMap((l) => l.warnings));
-				} catch (e) {
-					out.warnings.push(`Watch history: ${(e as Error).message}; watch-history rules cannot match this run`);
 				}
+				out.cert = combineCert(loaded.map((l) => l.certLookup));
+			} catch (e) {
+				if (needs.watch) out.warnings.push(`Watch history: ${(e as Error).message}; watch-history rules cannot match this run`);
 			}
 		}
 		if (needs.seerr) {
@@ -164,6 +207,15 @@ export function createEngine(deps: EngineDeps) {
 			}
 		}
 		return out;
+	}
+
+	/** Plex's content rating wins whenever Plex has the title; Sonarr/Radarr's own certification is used only when Plex doesn't have it. */
+	function applyCertFallback(items: LibraryItem[], cert: ((i: LibraryItem) => string | undefined) | null) {
+		if (!cert) return;
+		for (const item of items) {
+			const plexCert = cert(item);
+			if (plexCert) item.certification = plexCert;
+		}
 	}
 
 	async function loadSnapshot(needs: Needs): Promise<Snapshot> {
@@ -210,6 +262,7 @@ export function createEngine(deps: EngineDeps) {
 		snap.ctx.watch = ev.watch;
 		snap.ctx.seerr = ev.seerr;
 		snap.warnings.push(...ev.warnings);
+		applyCertFallback(snap.items, ev.cert);
 		return snap;
 	}
 
@@ -258,18 +311,22 @@ export function createEngine(deps: EngineDeps) {
 	function plan(snap: Snapshot, rules: Array<{ rule: RuleRecord; expr: Expression }>): Plan {
 		const retention = rules.filter((r) => r.rule.mode === "retention");
 		const cleanup = rules.filter((r) => r.rule.mode === "cleanup");
+		const protectedKeys = store.protected.targetKeys();
+		const overrideKeys = store.protected.targetKeys(true);
 		const candidates: Candidate[] = [];
 		const skipped: RunDetail[] = [];
 		for (const item of snap.items) {
 			if (snap.failedInstances.has(item.instanceId)) continue;
 			const fake = (rule: RuleRecord, reason: string): Candidate => ({ item, rule, reason });
-			let protectedBy: string | null = null;
-			for (const { rule, expr } of retention) {
-				if (!passesFilters(item, rule).ok) continue;
-				const r = evaluateExpression(expr, item, snap.ctx);
-				if (r.state !== "false") {
-					protectedBy = r.state === "true" ? `Protected by retention rule "${rule.name}": ${r.reason}` : `Retention rule "${rule.name}" could not be evaluated (${r.reason})`;
-					break;
+			let protectedBy: string | null = protectedKeys.has(targetKey(item)) ? "Manually protected" : null;
+			if (!protectedBy && !overrideKeys.has(targetKey(item))) {
+				for (const { rule, expr } of retention) {
+					if (!passesFilters(item, rule).ok) continue;
+					const r = evaluateExpression(expr, item, snap.ctx);
+					if (r.state !== "false") {
+						protectedBy = r.state === "true" ? `Protected by retention rule "${rule.name}": ${r.reason}` : `Retention rule "${rule.name}" could not be evaluated (${r.reason})`;
+						break;
+					}
 				}
 			}
 			for (const { rule, expr } of cleanup) {
@@ -279,37 +336,25 @@ export function createEngine(deps: EngineDeps) {
 				const r = evaluateExpression(expr, item, snap.ctx);
 				if (r.state !== "true") continue;
 				if (protectedBy) skipped.push(detail(fake(rule, r.reason), "skipped", protectedBy));
-				else candidates.push({ item, rule, reason: r.reason });
+				else if (rule.action === "delete" && seriesNotFinished(item)) {
+					skipped.push(detail(fake(rule, r.reason), "skipped", `Series is "${item.status ?? "unknown"}" (not ended); Cleanarr never fully deletes a series that may still get new episodes`));
+				} else candidates.push({ item, rule, reason: r.reason });
 				break;
 			}
 		}
 		return { candidates, skipped, evaluated: snap.items.filter((i) => i.kind !== "season").length };
 	}
 
-	function suppress(candidates: Candidate[], config: ConfigRecord): { keep: Candidate[]; skipped: RunDetail[] } {
+	/** `queued`: candidates that already have an open approval. Never re-proposed, but still worth showing (with their queue status) rather than hiding. */
+	function suppress(candidates: Candidate[]): { keep: Candidate[]; skipped: RunDetail[]; queued: Candidate[] } {
 		const open = store.approvals.openTargets();
-		const rejected = new Map<string, string[]>();
-		for (const r of store.approvals.rejectedSince()) rejected.set(r.key, [...(rejected.get(r.key) ?? []), r.reviewedAt]);
 		const keep: Candidate[] = [];
-		const skipped: RunDetail[] = [];
+		const queued: Candidate[] = [];
 		for (const c of candidates) {
-			const key = targetKey(c.item);
-			if (open.has(key)) {
-				skipped.push(detail(c, "skipped", "Already has an open approval"));
-				continue;
-			}
-			const memory = c.rule.useGlobalRejectionMemory ? config.rejectionMemoryDays : c.rule.rejectionMemoryDays;
-			const times = rejected.get(key);
-			if (times && memory !== 0) {
-				const latest = Math.max(...times.map((t) => Date.parse(t)));
-				if (memory === null || now().getTime() - latest < memory * 86_400_000) {
-					skipped.push(detail(c, "skipped", memory === null ? "Previously rejected (remembered forever)" : `Previously rejected within ${memory} days`));
-					continue;
-				}
-			}
-			keep.push(c);
+			if (open.has(targetKey(c.item))) queued.push(c);
+			else keep.push(c);
 		}
-		return { keep, skipped };
+		return { keep, skipped: [], queued };
 	}
 
 	function order(candidates: Candidate[]): Candidate[] {
@@ -360,6 +405,8 @@ export function createEngine(deps: EngineDeps) {
 			if (!season) return { ok: false, kind: "gone", message: `Season ${args.seasonNumber} no longer has files` };
 			item = season;
 		}
+		const ev = await loadEvidence(needs);
+		applyCertFallback([item], ev.cert);
 
 		if (args.snapshot) {
 			const s = args.snapshot;
@@ -371,10 +418,15 @@ export function createEngine(deps: EngineDeps) {
 				live.fileCount !== s.fileCount || (s.fileIds && JSON.stringify(live.fileIds) !== JSON.stringify(s.fileIds)) ? "files changed" : null;
 			if (mismatch) return { ok: false, kind: "blocked", message: `Item changed since it was selected (${mismatch})` };
 		}
+		if (store.protected.targetKeys().has(targetKey(item))) return { ok: false, kind: "blocked", message: "Manually protected" };
+		if (rule?.action === "delete" && seriesNotFinished(item)) {
+			return { ok: false, kind: "blocked", message: `Series is "${item.status ?? "unknown"}" (not ended); Cleanarr never fully deletes a series that may still get new episodes` };
+		}
 
-		const ev = await loadEvidence(needs);
 		const ctx: EvalContext = { now: now(), watch: ev.watch, seerr: ev.seerr };
+		const overridden = store.protected.targetKeys(true).has(targetKey(item));
 		for (const { rule: r, expr } of rules) {
+			if (overridden && r.mode === "retention") continue;
 			if (r.mode === "cleanup" && r.id !== args.ruleId) continue;
 			if (!passesFilters(item, r).ok) continue;
 			const res = evaluateExpression(expr, item, ctx);
@@ -413,43 +465,20 @@ export function createEngine(deps: EngineDeps) {
 			title: c.title, ruleId: e.rule?.id, ruleName: e.rule?.name, action: e.action, reason: e.reason, details: e.details,
 		});
 
-	/** Direct (no-approval) execution of one candidate. */
-	async function executeDirect(c: Candidate, ctx: { trigger: Trigger; actor: string; runLogId: string; snapshot: SafetySnapshot }): Promise<RunDetail> {
-		const correlationId = randomUUID();
-		const who = { instance: c.item.instanceId, arrId: c.item.arrId, kind: c.item.kind, title: c.item.season ? `${c.item.title} (Season ${c.item.season.number})` : c.item.title };
-		const base = { correlationId, trigger: ctx.trigger, actor: ctx.actor, runLogId: ctx.runLogId, rule: c.rule, action: c.rule.action };
-		audit(who, { ...base, eventType: "selected", outcome: "info", reason: c.reason });
-		try {
-			const v = await revalidate({ instanceId: c.item.instanceId, arrItemId: c.item.arrId, seasonNumber: c.item.season?.number, ruleId: c.rule.id, snapshot: ctx.snapshot, requireRule: true });
-			if (!v.ok) {
-				audit(who, { ...base, eventType: v.kind === "gone" ? "already_removed" : "blocked", outcome: v.kind === "gone" ? "info" : "blocked", reason: v.message });
-				return detail(c, v.kind === "gone" ? "skipped" : "blocked", v.message);
-			}
-			audit(who, { ...base, eventType: "execution_started", outcome: "info", reason: c.reason });
-			const outcome = await mutate(v.api, v.item, c.rule.action);
-			audit(who, { ...base, eventType: "executed", outcome: "success", reason: c.reason, details: { sizeOnDisk: c.item.sizeOnDisk } });
-			return detail(c, outcome);
-		} catch (e) {
-			const message = (e as Error).message;
-			audit(who, { ...base, eventType: "failed", outcome: "failed", reason: message });
-			return detail(c, "failed", message);
-		}
-	}
-
 	// ── Approvals ──────────────────────────────────────────────────────────
 	function approvalAudit(a: ApprovalRow, e: Omit<Parameters<typeof audit>[1], "action" | "reason" | "approvalId" | "rule"> & { reason: string }) {
 		audit({ instance: a.instanceId, arrId: a.arrItemId, kind: a.itemType, title: a.seasonNumber != null ? `${a.title} (Season ${a.seasonNumber})` : a.title }, { ...e, approvalId: a.id, rule: { id: a.ruleId, name: a.ruleName }, action: a.action });
 	}
 
-	function reject(id: string, actor: string): ApprovalRow {
-		const a = store.approvals.get(id);
-		if (!a) throw new ConflictError("Approval not found");
-		if (!store.approvals.transition(id, ["pending", "retry_pending"], "rejected", { reviewed: true })) throw new ConflictError(`Approval is ${a.status}; only pending approvals can be rejected`);
-		approvalAudit(a, { correlationId: a.id, eventType: "rejected", outcome: "info", trigger: "approval", actor, reason: "Rejected by operator" });
-		return store.approvals.get(id) as ApprovalRow;
+	/** Approves (if still pending) and executes. Exactly one caller can win the status transition. */
+	/** Best-effort: the title is already gone from Sonarr/Radarr, so a Seerr failure is logged, not retried. */
+	async function clearSeerr(item: LibraryItem) {
+		for (const inst of store.instances.list().filter((i) => i.enabled && i.type === "seerr")) {
+			try { await deps.seerr(inst).clear(item); }
+			catch (e) { log.warn({ instance: inst.name, title: item.title, err: (e as Error).message }, "seerr clear failed"); }
+		}
 	}
 
-	/** Approves (if still pending) and executes. Exactly one caller can win the status transition. */
 	async function approve(id: string, opts: { actor: string; trigger?: Trigger; runLogId?: string }): Promise<ApprovalRow> {
 		const a0 = store.approvals.get(id);
 		if (!a0) throw new ConflictError("Approval not found");
@@ -457,10 +486,6 @@ export function createEngine(deps: EngineDeps) {
 		const trigger = opts.trigger ?? (a0.status === "retry_pending" ? "retry" : "approval");
 		const retry = a0.status === "retry_pending";
 		const token = randomUUID();
-		if (a0.status === "pending" && Date.parse(a0.expiresAt) < now().getTime()) {
-			store.approvals.transition(id, ["pending"], "expired");
-			throw new ConflictError("Approval has expired");
-		}
 		if (!store.approvals.transition(id, ["pending", "retry_pending"], retry ? "retry_executing" : "executing", { token, reviewed: !retry, bumpAttempt: true })) {
 			throw new ConflictError(`Approval is ${store.approvals.get(id)?.status}; it can no longer be approved`);
 		}
@@ -483,6 +508,7 @@ export function createEngine(deps: EngineDeps) {
 				return store.approvals.get(id) as ApprovalRow;
 			}
 			await mutate(v.api, v.item, a.action);
+			if (a.action === "delete") await clearSeerr(v.item);
 			done("executed");
 			approvalAudit(a, { ...base, eventType: "executed", outcome: "success", reason: a.reason, details: { sizeOnDisk: a.sizeOnDisk } });
 		} catch (e) {
@@ -500,6 +526,10 @@ export function createEngine(deps: EngineDeps) {
 		actor?: string;
 		/** Force a dry run regardless of the saved setting (used by Preview). Never the reverse. */
 		forceDryRun?: boolean;
+		/** Execute matches right away: runs the whole queue regardless of executeAfter, and skips the queue delay for new matches. */
+		immediate?: boolean;
+		/** Act on this one title only: no queue draining, no schedule bump. */
+		only?: { instanceId: string; arrItemId: number; seasonNumber?: number | null };
 	}
 
 	async function run(opts: RunOptions) {
@@ -518,8 +548,19 @@ export function createEngine(deps: EngineDeps) {
 		let evaluated = 0;
 		let flagged = 0;
 		let skippedCount = 0;
+		let budget = config.maxRemovalsPerRun;
+		/** Executes already-queued items (due by time, or previously failed) through the normal approve() path. */
+		async function executeQueued(rows: ApprovalRow[], trigger: Trigger) {
+			for (const a of rows) {
+				if (budget <= 0) break;
+				budget--;
+				const r = await approve(a.id, { actor, trigger, runLogId });
+				const outcome: Outcome = r.status === "executed" ? (r.action === "unmonitor" ? "unmonitored" : r.action === "delete_files" || r.action === "delete_season" ? "files_deleted" : "removed") : r.status === "blocked" ? "blocked" : "failed";
+				details.push({ instanceId: r.instanceId, arrItemId: r.arrItemId, itemType: r.itemType, ...(r.seasonNumber != null ? { seasonNumber: r.seasonNumber } : {}), title: r.title, ruleId: r.ruleId, ruleName: r.ruleName, action: r.action, reason: r.reason, sizeOnDisk: r.sizeOnDisk, outcome, message: r.lastError ?? undefined });
+				tally(outcome, r.sizeOnDisk);
+			}
+		}
 		try {
-			store.approvals.expireDue();
 			store.approvals.recoverStuck(LEASE_STALE_MS);
 
 			const { rules, needs, warnings: ruleWarnings } = activeRules();
@@ -529,22 +570,17 @@ export function createEngine(deps: EngineDeps) {
 
 			const p = plan(snap, rules);
 			evaluated = p.evaluated;
-			const { keep, skipped } = suppress(p.candidates, config);
-			details.push(...p.skipped, ...skipped);
-			const ordered = order(keep);
+			const { keep, queued } = suppress(p.candidates);
+			details.push(...p.skipped, ...queued.map((c) => detail(c, "skipped", "Already has an open approval")));
+			const { only } = opts;
+			const ordered = order(keep).filter((c) => !only || (c.item.instanceId === only.instanceId && c.item.arrId === only.arrItemId && (c.item.season?.number ?? null) === (only.seasonNumber ?? null)));
 			flagged = ordered.length;
-			let budget = config.maxRemovalsPerRun;
 
-			// Failed approvals first: they were already approved by a human.
-			if (!dryRun) {
-				for (const a of store.approvals.retryable(budget)) {
-					if (budget <= 0) break;
-					budget--;
-					const r = await approve(a.id, { actor, trigger: "retry", runLogId });
-					const outcome: Outcome = r.status === "executed" ? (r.action === "unmonitor" ? "unmonitored" : r.action === "delete_files" || r.action === "delete_season" ? "files_deleted" : "removed") : r.status === "blocked" ? "blocked" : "failed";
-					details.push({ instanceId: r.instanceId, arrItemId: r.arrItemId, itemType: r.itemType, ...(r.seasonNumber != null ? { seasonNumber: r.seasonNumber } : {}), title: r.title, ruleId: r.ruleId, ruleName: r.ruleName, action: r.action, reason: r.reason, sizeOnDisk: r.sizeOnDisk, outcome, message: r.lastError ?? undefined });
-					tally(outcome, r.sizeOnDisk);
-				}
+			const immediate = opts.immediate === true;
+			if (!dryRun && !only) {
+				// Oldest-due queue items first (or, when immediate, the whole queue regardless of wait), then items that failed a previous attempt.
+				await executeQueued(store.approvals.due(budget, immediate), "queue");
+				await executeQueued(store.approvals.retryable(budget), "retry");
 			}
 
 			for (const c of ordered) {
@@ -556,24 +592,19 @@ export function createEngine(deps: EngineDeps) {
 					details.push(detail(c, "skipped", `Deferred: run budget of ${config.maxRemovalsPerRun} reached`));
 					continue;
 				}
-				budget--;
-				if (config.requireApproval) {
-					const approval = store.approvals.create({
-						instanceId: c.item.instanceId, arrItemId: c.item.arrId, seasonNumber: c.item.season?.number ?? null, itemType: c.item.kind, title: c.item.title, year: c.item.year,
-						sizeOnDisk: c.item.sizeOnDisk, ruleId: c.rule.id, ruleName: c.rule.name, reason: c.reason, action: c.rule.action,
-						safetySnapshot: snapshotOf(c.item), expiresAt: new Date(now().getTime() + config.approvalExpiryDays * 86_400_000),
-					});
-					approvalAudit(approval, { correlationId: approval.id, eventType: "proposed", outcome: "info", trigger: opts.trigger, actor, runLogId, reason: c.reason });
-					details.push(detail(c, "pending_approval"));
-					continue;
-				}
-				const d = await executeDirect(c, { trigger: opts.trigger, actor, runLogId, snapshot: snapshotOf(c.item) });
-				details.push(d);
-				tally(d.outcome, d.sizeOnDisk);
+				if (!immediate) budget--; // immediate execution below decrements budget itself, via executeQueued
+				const approval = store.approvals.create({
+					instanceId: c.item.instanceId, arrItemId: c.item.arrId, seasonNumber: c.item.season?.number ?? null, itemType: c.item.kind, title: c.item.title, year: c.item.year,
+					sizeOnDisk: c.item.sizeOnDisk, ruleId: c.rule.id, ruleName: c.rule.name, reason: c.reason, action: c.rule.action,
+					safetySnapshot: snapshotOf(c.item), executeAfter: new Date(now().getTime() + (immediate ? 0 : config.queueDelayDays * 86_400_000)),
+				});
+				approvalAudit(approval, { correlationId: approval.id, eventType: "proposed", outcome: "info", trigger: opts.trigger, actor, runLogId, reason: c.reason });
+				if (immediate) await executeQueued([approval], opts.trigger);
+				else details.push(detail(c, "pending_approval"));
 			}
 
 			// Previews never move the schedule; real and scheduled runs (even dry ones) do.
-			if (!opts.forceDryRun) store.config.markRun(now(), config.intervalHours);
+			if (!opts.forceDryRun && !only) store.config.markRun(now());
 			skippedCount = details.filter((d) => d.outcome === "skipped" || d.outcome === "blocked").length;
 			const status = counts.failed > 0 ? "partial" : "completed";
 			store.logs.finish(runLogId, { status, evaluated, flagged, removed: counts.removed, unmonitored: counts.unmonitored, filesDeleted: counts.filesDeleted, skipped: skippedCount, bytesReclaimed: counts.bytes, details: details.slice(0, MAX_DETAILS), warnings, durationMs: Date.now() - started });
@@ -610,10 +641,11 @@ export function createEngine(deps: EngineDeps) {
 			item = season;
 		}
 		const ev = await loadEvidence(needs);
+		applyCertFallback([item], ev.cert);
 		const ctx: EvalContext = { now: now(), watch: ev.watch, seerr: ev.seerr };
 		const warnings = ev.warnings;
 		return {
-			item: { title: item.title, year: item.year, kind: item.kind, seasonNumber: item.season?.number ?? null, sizeOnDisk: item.sizeOnDisk, monitored: item.monitored, tags: item.tags, path: item.path },
+			item: { title: item.title, year: item.year, kind: item.kind, seasonNumber: item.season?.number ?? null, sizeOnDisk: item.sizeOnDisk, monitored: item.monitored, status: item.status, certification: item.certification, tags: item.tags, path: item.path },
 			warnings,
 			rules: rules.map(({ rule, expr }) => {
 				const seasonScope = rule.mode === "cleanup" && (item.kind === "season") !== (rule.action === "delete_season");
@@ -624,22 +656,64 @@ export function createEngine(deps: EngineDeps) {
 		};
 	}
 
-	/** Preview = full evaluation with no writes and no approvals; returns the candidates directly. */
+	/** Total capacity across all enabled *arr instances; identical total+free pairs are one disk shared by several instances. Null if no instance answers. */
+	async function totalCapacity(): Promise<number | null> {
+		const disks = new Map<string, number>();
+		await Promise.all(store.instances.list().filter((i) => i.enabled && (i.type === "sonarr" || i.type === "radarr")).map(async (inst) => {
+			try { for (const d of await deps.arr(inst).diskspace()) disks.set(`${d.totalSpace}:${d.freeSpace}`, d.totalSpace); } catch (e) { log.warn({ instance: inst.name, err: (e as Error).message }, "diskspace failed"); }
+		}));
+		return disks.size ? [...disks.values()].reduce((a, b) => a + b, 0) : null;
+	}
+
+	/** Queues every not-yet-queued match, same as a real run would, capped at maxRemovalsPerRun. Skipped during dry run, since nothing is ever queued then. A match is never shown without a countdown. */
+	function enqueueNewMatches(keep: Candidate[], config: ConfigRecord) {
+		if (config.dryRun) return;
+		let budget = config.maxRemovalsPerRun;
+		for (const c of order(keep)) {
+			if (budget-- <= 0) break;
+			const approval = store.approvals.create({
+				instanceId: c.item.instanceId, arrItemId: c.item.arrId, seasonNumber: c.item.season?.number ?? null, itemType: c.item.kind, title: c.item.title, year: c.item.year,
+				sizeOnDisk: c.item.sizeOnDisk, ruleId: c.rule.id, ruleName: c.rule.name, reason: c.reason, action: c.rule.action,
+				safetySnapshot: snapshotOf(c.item), executeAfter: new Date(now().getTime() + config.queueDelayDays * 86_400_000),
+			});
+			approvalAudit(approval, { correlationId: approval.id, eventType: "proposed", outcome: "info", trigger: "pickup", actor: "system", reason: c.reason });
+		}
+	}
+
+	/** Preview = full evaluation, but a match is queued the moment it's found (unless dry run), so nothing is ever shown "flagged" without a countdown. No execution here; reclaiming still waits for a real run. */
 	async function preview() {
-		const config = store.config.get();
 		const { rules, needs, warnings: rw } = activeRules();
-		const snap = await loadSnapshot(needs);
+		const [snap, capacityBytes] = await Promise.all([loadSnapshot(needs), totalCapacity()]);
 		const p = plan(snap, rules);
-		const { keep, skipped } = suppress(p.candidates, config);
-		const ordered = order(keep);
+		const { keep, queued } = suppress(p.candidates);
+		enqueueNewMatches(keep, store.config.get());
+		const openRows = store.approvals.openByTarget();
+		const withQueue = (c: Candidate) => {
+			const a = openRows.get(targetKey(c.item));
+			return { ...detail(c, "flagged"), queue: a ? { id: a.id, status: a.status, executeAfter: a.executeAfter, lastError: a.lastError } : null };
+		};
+		const shown = [...order(keep), ...queued];
 		return {
 			evaluated: p.evaluated,
 			warnings: [...rw, ...snap.warnings],
-			candidates: ordered.map((c) => detail(c, "flagged")),
-			skipped: [...p.skipped, ...skipped],
-			totalBytes: ordered.reduce((n, c) => n + c.item.sizeOnDisk, 0),
-			library: librarySummary(snap.items),
+			candidates: shown.map(withQueue),
+			skipped: p.skipped,
+			totalBytes: shown.reduce((n, c) => n + c.item.sizeOnDisk, 0),
+			library: { ...librarySummary(snap.items), capacityBytes },
+			missing: missingItems(snap.items),
 		};
+	}
+
+	// ── External links ────────────────────────────────────────────────────
+	/** Deep link into the Sonarr/Radarr web UI, which routes by title slug rather than the internal id. */
+	async function externalLink(instanceId: string, arrItemId: number): Promise<{ url: string }> {
+		const inst = store.instances.get(instanceId);
+		if (!inst || (inst.type !== "sonarr" && inst.type !== "radarr")) throw new ConflictError("Unknown Sonarr/Radarr instance");
+		const api = deps.arr(inst);
+		const raw = await api.get(arrItemId);
+		const slug = typeof raw.titleSlug === "string" && raw.titleSlug ? raw.titleSlug : String(arrItemId);
+		const root = inst.type === "sonarr" ? "series" : "movie";
+		return { url: `${inst.url}/${root}/${slug}` };
 	}
 
 	// ── Episodes ───────────────────────────────────────────────────────────
@@ -664,7 +738,7 @@ export function createEngine(deps: EngineDeps) {
 		}));
 	}
 
-	return { run, preview, explain, approve, reject, snapshotOf, episodesOnDisk, MAX_ATTEMPTS };
+	return { run, preview, explain, approve, snapshotOf, episodesOnDisk, externalLink, MAX_ATTEMPTS };
 }
 
 export type Engine = ReturnType<typeof createEngine>;

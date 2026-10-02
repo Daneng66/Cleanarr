@@ -118,7 +118,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
 		api.post("/preview", async () => engine.preview());
 		api.post("/run", async (req) => {
 			const body = S.runRequest.parse(req.body ?? {});
-			return engine.run({ trigger: "manual", forceDryRun: body.dryRun === true });
+			return engine.run({ trigger: "manual", forceDryRun: body.dryRun === true, immediate: body.immediate === true, only: body.only });
 		});
 		api.post("/explain", async (req) => {
 			const b = S.explainRequest.parse(req.body);
@@ -127,6 +127,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
 		api.get<{ Params: { instanceId: string; seriesId: string }; Querystring: { season?: string } }>("/series/:instanceId/:seriesId/episodes", async (req) =>
 			engine.episodesOnDisk(req.params.instanceId, Number(req.params.seriesId), req.query.season !== undefined ? Number(req.query.season) : null),
 		);
+		api.get<{ Params: { instanceId: string; arrItemId: string } }>("/link/:instanceId/:arrItemId", async (req) => engine.externalLink(req.params.instanceId, Number(req.params.arrItemId)));
 		api.get<{ Querystring: { limit?: string; offset?: string } }>("/logs", async (req) => store.logs.list(Math.min(Number(req.query.limit ?? 50), 200), Number(req.query.offset ?? 0)));
 		api.get<{ Params: { id: string } }>("/logs/:id", async (req, reply) => store.logs.get(req.params.id) ?? reply.code(404).send({ error: "Not found" }));
 
@@ -134,21 +135,14 @@ export function buildApp(deps: AppDeps): FastifyInstance {
 		api.get<{ Querystring: { status?: string } }>("/approvals", async (req) => store.approvals.list(req.query.status));
 		api.post<{ Params: { id: string } }>("/approvals/:id/approve", async (req) => engine.approve(req.params.id, { actor: "operator" }));
 		api.post<{ Params: { id: string } }>("/approvals/:id/retry", async (req) => engine.approve(req.params.id, { actor: "operator", trigger: "retry" }));
-		api.post<{ Params: { id: string } }>("/approvals/:id/reject", async (req) => engine.reject(req.params.id, "operator"));
-		api.post("/approvals/bulk", async (req) => {
-			const b = S.bulkApproval.parse(req.body);
-			const results: Array<{ id: string; ok: boolean; status?: string; error?: string }> = [];
-			for (const id of b.ids) {
-				try {
-					const r = b.action === "approve" ? await engine.approve(id, { actor: "operator" }) : engine.reject(id, "operator");
-					results.push({ id, ok: true, status: r.status });
-				} catch (e) {
-					if (e instanceof DryRunError) throw e;
-					results.push({ id, ok: false, error: (e as Error).message });
-				}
-			}
-			return { results };
+
+		// Manual protection
+		api.get("/protected", async () => store.protected.list());
+		api.post("/protected", async (req, reply) => {
+			const b = S.protectedCreate.parse(req.body);
+			return reply.code(201).send(store.protected.create({ ...b, seasonNumber: b.seasonNumber ?? null }));
 		});
+		api.delete<{ Params: { id: string } }>("/protected/:id", async (req, reply) => (store.protected.delete(req.params.id) ? reply.code(204).send() : reply.code(404).send({ error: "Not found" })));
 
 		// Audit
 		api.get<{ Querystring: { limit?: string; offset?: string; correlationId?: string; approvalId?: string } }>("/audit", async (req) =>

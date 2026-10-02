@@ -218,6 +218,120 @@ ALTER TABLE approvals_new RENAME TO approvals;
 CREATE INDEX approvals_status ON approvals (status);
 CREATE INDEX approvals_target ON approvals (instance_id, arr_item_id, item_type);
 `,
+	// 5: Approvals replaced by a delay queue (no manual gate; items auto-execute once their wait elapses).
+	// "expires_at" (a safety-net deadline) becomes "execute_after" (the earliest time it's allowed to run).
+	// Manual protection: items excluded from cleanup regardless of any rule.
+	`
+CREATE TABLE config_new (
+	id INTEGER PRIMARY KEY CHECK (id = 1),
+	enabled INTEGER NOT NULL DEFAULT 0,
+	interval_hours INTEGER NOT NULL DEFAULT 24,
+	dry_run INTEGER NOT NULL DEFAULT 1,
+	max_removals_per_run INTEGER NOT NULL DEFAULT 50,
+	queue_delay_days INTEGER NOT NULL DEFAULT 3,
+	rejection_memory_days INTEGER DEFAULT 0,
+	last_run_at TEXT,
+	next_run_at TEXT,
+	run_claim_token TEXT,
+	run_claimed_at TEXT
+);
+INSERT INTO config_new (id, enabled, interval_hours, dry_run, max_removals_per_run, queue_delay_days, rejection_memory_days, last_run_at, next_run_at, run_claim_token, run_claimed_at)
+	SELECT id, enabled, interval_hours, dry_run, max_removals_per_run, approval_expiry_days, rejection_memory_days, last_run_at, next_run_at, run_claim_token, run_claimed_at FROM config;
+DROP TABLE config;
+ALTER TABLE config_new RENAME TO config;
+
+CREATE TABLE approvals_new (
+	id TEXT PRIMARY KEY,
+	instance_id TEXT NOT NULL,
+	arr_item_id INTEGER NOT NULL,
+	item_type TEXT NOT NULL CHECK (item_type IN ('movie','series','season')),
+	title TEXT NOT NULL,
+	year INTEGER,
+	size_on_disk INTEGER NOT NULL DEFAULT 0,
+	rule_id TEXT NOT NULL,
+	rule_name TEXT NOT NULL,
+	reason TEXT NOT NULL,
+	action TEXT NOT NULL,
+	status TEXT NOT NULL DEFAULT 'pending'
+		CHECK (status IN ('pending','approved','retry_pending','rejected','executing','retry_executing','executed','expired','blocked')),
+	execution_token TEXT,
+	attempt_count INTEGER NOT NULL DEFAULT 0,
+	safety_snapshot TEXT NOT NULL,
+	last_error TEXT,
+	reviewed_at TEXT,
+	executed_at TEXT,
+	execute_after TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	season_number INTEGER
+);
+INSERT INTO approvals_new SELECT id,instance_id,arr_item_id,item_type,title,year,size_on_disk,rule_id,rule_name,reason,action,status,execution_token,attempt_count,safety_snapshot,last_error,reviewed_at,executed_at,expires_at,created_at,season_number FROM approvals;
+DROP TABLE approvals;
+ALTER TABLE approvals_new RENAME TO approvals;
+CREATE INDEX approvals_status ON approvals (status);
+CREATE INDEX approvals_target ON approvals (instance_id, arr_item_id, item_type);
+CREATE INDEX approvals_execute_after ON approvals (execute_after);
+
+CREATE TABLE protected_items (
+	id TEXT PRIMARY KEY,
+	instance_id TEXT NOT NULL,
+	arr_item_id INTEGER NOT NULL,
+	item_type TEXT NOT NULL CHECK (item_type IN ('movie','series','season')),
+	season_number INTEGER,
+	title TEXT NOT NULL,
+	note TEXT,
+	created_at TEXT NOT NULL
+);
+CREATE INDEX protected_items_target ON protected_items (instance_id, arr_item_id, item_type, season_number);
+`,
+	// 6: A protected_items row with ignore_retention = 1 is an override, not protection: retention rules no longer shield that item.
+	`ALTER TABLE protected_items ADD COLUMN ignore_retention INTEGER NOT NULL DEFAULT 0;`,
+	// 7: Rejection memory removed; protecting an item is the only durable way to keep it out of cleanup.
+	`
+CREATE TABLE config_new (
+	id INTEGER PRIMARY KEY CHECK (id = 1),
+	enabled INTEGER NOT NULL DEFAULT 0,
+	interval_hours INTEGER NOT NULL DEFAULT 24,
+	dry_run INTEGER NOT NULL DEFAULT 1,
+	max_removals_per_run INTEGER NOT NULL DEFAULT 50,
+	queue_delay_days INTEGER NOT NULL DEFAULT 3,
+	last_run_at TEXT,
+	next_run_at TEXT,
+	run_claim_token TEXT,
+	run_claimed_at TEXT
+);
+INSERT INTO config_new (id, enabled, interval_hours, dry_run, max_removals_per_run, queue_delay_days, last_run_at, next_run_at, run_claim_token, run_claimed_at)
+	SELECT id, enabled, interval_hours, dry_run, max_removals_per_run, queue_delay_days, last_run_at, next_run_at, run_claim_token, run_claimed_at FROM config;
+DROP TABLE config;
+ALTER TABLE config_new RENAME TO config;
+
+CREATE TABLE rules_new (
+	id TEXT PRIMARY KEY,
+	name TEXT NOT NULL,
+	enabled INTEGER NOT NULL DEFAULT 1,
+	priority INTEGER NOT NULL DEFAULT 0,
+	mode TEXT NOT NULL DEFAULT 'cleanup' CHECK (mode IN ('cleanup','retention')),
+	action TEXT NOT NULL DEFAULT 'delete' CHECK (action IN ('delete','unmonitor','delete_files','delete_season')),
+	expression TEXT NOT NULL,
+	service_filter TEXT,
+	instance_filter TEXT,
+	exclude_tags TEXT,
+	exclude_titles TEXT,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
+INSERT INTO rules_new (id,name,enabled,priority,mode,action,expression,service_filter,instance_filter,exclude_tags,exclude_titles,created_at,updated_at)
+	SELECT id,name,enabled,priority,mode,action,expression,service_filter,instance_filter,exclude_tags,exclude_titles,created_at,updated_at FROM rules;
+DROP TABLE rules;
+ALTER TABLE rules_new RENAME TO rules;
+`,
+	// 8: Schedule is "every N days/weeks/months at HH:MM" instead of a raw hour count; existing hourly intervals become whole days.
+	`
+ALTER TABLE config ADD COLUMN interval_every INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE config ADD COLUMN interval_unit TEXT NOT NULL DEFAULT 'days' CHECK (interval_unit IN ('days','weeks','months'));
+ALTER TABLE config ADD COLUMN run_time TEXT NOT NULL DEFAULT '03:00';
+UPDATE config SET interval_every = MAX(1, interval_hours / 24);
+ALTER TABLE config DROP COLUMN interval_hours;
+`,
 ];
 
 export function openDb(path: string): Db {

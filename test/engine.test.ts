@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { ConflictError, DryRunError, RunInProgressError } from "../src/cleanup/engine.js";
+import { DryRunError, RunInProgressError } from "../src/cleanup/engine.js";
 import { createScheduler } from "../src/cleanup/scheduler.js";
 import { DAY, GB, NOW, movie, series, setup, old } from "./helpers.js";
 
-const live = (s: ReturnType<typeof setup>, over: Record<string, unknown> = {}) => s.store.config.update({ dryRun: false, requireApproval: false, ...over });
+const live = (s: ReturnType<typeof setup>, over: Record<string, unknown> = {}) => s.store.config.update({ dryRun: false, ...over });
+/** Runs every pending queue item now, as if an operator clicked "Run now" on each. */
+async function approveAll(s: ReturnType<typeof setup>) {
+	for (const a of s.store.approvals.list("pending")) await s.engine.approve(a.id, { actor: "test" });
+}
 
 describe("dry run", () => {
 	it("is the default and never mutates or creates approvals", async () => {
@@ -32,24 +36,25 @@ describe("dry run", () => {
 	});
 });
 
-describe("direct execution", () => {
-	it("deletes matching items and records bytes reclaimed + audit trail", async () => {
+describe("queue execution", () => {
+	it("queues matching items, then removes them once run now, recording bytes reclaimed + audit trail", async () => {
 		const s = setup({ radarr: [movie(1), movie(2, { added: new Date(NOW.getTime() - 5 * DAY).toISOString() })] });
 		live(s);
 		s.rule("old", old(100));
-		const log = await s.engine.run({ trigger: "manual" });
+		await s.engine.run({ trigger: "manual" });
+		const [a] = s.store.approvals.list("pending");
+		await s.engine.approve(a!.id, { actor: "me" });
 		expect(s.radarrApi.calls).toEqual(["delete:1:true"]);
-		expect(log?.itemsRemoved).toBe(1);
-		expect(log?.bytesReclaimed).toBe(10 * GB);
+		expect(s.store.logs.stats().bytes).toBe(10 * GB);
 		const types = s.store.audit.list().map((e) => e.event_type).reverse();
-		expect(types).toEqual(["selected", "execution_started", "executed"]);
+		expect(types).toEqual(["proposed", "approved", "executed"]);
 	});
-	it("honours maxRemovalsPerRun and defers the rest", async () => {
+	it("honours maxRemovalsPerRun and defers the rest when queueing", async () => {
 		const s = setup({ radarr: [movie(1), movie(2), movie(3)] });
 		live(s, { maxRemovalsPerRun: 2 });
 		s.rule("old", old(100));
 		const log = await s.engine.run({ trigger: "manual" });
-		expect(log?.itemsRemoved).toBe(2);
+		expect(s.store.approvals.list("pending")).toHaveLength(2);
 		expect(log?.details.filter((d: any) => d.message?.startsWith("Deferred"))).toHaveLength(1);
 	});
 	it("supports unmonitor and delete_files actions", async () => {
@@ -58,6 +63,7 @@ describe("direct execution", () => {
 		s.rule("a", { type: "genre", params: { operator: "includes_any", genres: ["Drama"] } }, { action: "unmonitor", excludeTitles: ["Movie 2"] });
 		s.rule("b", old(100), { action: "delete_files", priority: 5 });
 		await s.engine.run({ trigger: "manual" });
+		await approveAll(s);
 		expect(s.radarrApi.calls.sort()).toEqual(["delete_files:2", "unmonitor:1"]);
 	});
 	it("first matching rule by priority wins", async () => {
@@ -66,7 +72,38 @@ describe("direct execution", () => {
 		s.rule("late", old(100), { action: "delete", priority: 2 });
 		s.rule("early", old(100), { action: "unmonitor", priority: 1 });
 		await s.engine.run({ trigger: "manual" });
+		await approveAll(s);
 		expect(s.radarrApi.calls).toEqual(["unmonitor:1"]);
+	});
+	it("a queued item auto-executes once its wait elapses, via the next run", async () => {
+		const s = setup({ radarr: [movie(1), movie(2)] });
+		live(s, { queueDelayDays: 1 });
+		s.rule("old", old(100));
+		await s.engine.run({ trigger: "manual" });
+		expect(s.radarrApi.calls).toEqual([]);
+		s.clock.now = new Date(NOW.getTime() + 25 * 3_600_000);
+		const log = await s.engine.run({ trigger: "manual" });
+		expect(log?.itemsRemoved).toBe(2);
+		expect(s.store.approvals.list("executed")).toHaveLength(2);
+	});
+	it("immediate: true executes new matches right away, ignoring queueDelayDays", async () => {
+		const s = setup({ radarr: [movie(1), movie(2)] });
+		live(s, { queueDelayDays: 30 });
+		s.rule("old", old(100));
+		const log = await s.engine.run({ trigger: "manual", immediate: true });
+		expect(log?.itemsRemoved).toBe(2);
+		expect(s.radarrApi.calls.sort()).toEqual(["delete:1:true", "delete:2:true"]);
+		expect(s.store.approvals.list("pending")).toHaveLength(0);
+	});
+	it("immediate: true also drains an already-queued item that isn't due yet", async () => {
+		const s = setup({ radarr: [movie(1)] });
+		live(s, { queueDelayDays: 30 });
+		s.rule("old", old(100));
+		await s.engine.run({ trigger: "manual" }); // queues it with a 30-day wait
+		expect(s.store.approvals.list("pending")).toHaveLength(1);
+		const log = await s.engine.run({ trigger: "manual", immediate: true });
+		expect(log?.itemsRemoved).toBe(1);
+		expect(s.radarrApi.calls).toEqual(["delete:1:true"]);
 	});
 });
 
@@ -77,8 +114,19 @@ describe("safety", () => {
 		s.rule("old", old(100));
 		s.rule("keep tagged", { type: "tag_match", params: { operator: "includes_any", tags: ["keep"] } }, { mode: "retention" });
 		const log = await s.engine.run({ trigger: "manual" });
-		expect(s.radarrApi.calls).toEqual(["delete:2:true"]);
 		expect(log?.details.find((d: any) => d.arrItemId === 1)?.message).toMatch(/Protected by retention/);
+		await approveAll(s);
+		expect(s.radarrApi.calls).toEqual(["delete:2:true"]);
+	});
+	it("an ignore-retention override lets cleanup rules flag an item a retention rule protects", async () => {
+		const s = setup({ radarr: [movie(1, { tags: [1] })] });
+		live(s);
+		s.rule("old", old(100));
+		s.rule("keep tagged", { type: "tag_match", params: { operator: "includes_any", tags: ["keep"] } }, { mode: "retention" });
+		s.store.protected.create({ instanceId: s.radarr.id, arrItemId: 1, itemType: "movie", title: "Movie 1", ignoreRetention: true });
+		await s.engine.run({ trigger: "manual" });
+		await approveAll(s);
+		expect(s.radarrApi.calls).toEqual(["delete:1:true"]);
 	});
 	it("a retention rule that cannot be evaluated protects the item (fail closed)", async () => {
 		const s = setup({ radarr: [movie(1)], watch: "fail" });
@@ -93,6 +141,46 @@ describe("safety", () => {
 		expect(p.candidates).toHaveLength(0);
 		expect(p.skipped[0]?.message).toMatch(/could not be evaluated/);
 	});
+	it("manually protected items are never queued", async () => {
+		const s = setup({ radarr: [movie(1), movie(2)] });
+		live(s);
+		s.rule("old", old(100));
+		s.store.protected.create({ instanceId: s.radarr.id, arrItemId: 1, itemType: "movie", title: "Movie 1" });
+		const log = await s.engine.run({ trigger: "manual" });
+		expect(log?.details.find((d: any) => d.arrItemId === 1)?.message).toBe("Manually protected");
+		await approveAll(s);
+		expect(s.radarrApi.calls).toEqual(["delete:2:true"]);
+	});
+	it("protecting an item after it was already queued blocks execution at the mutation boundary", async () => {
+		const s = setup({ radarr: [movie(1)] });
+		live(s);
+		s.rule("old", old(100));
+		await s.engine.run({ trigger: "manual" });
+		const [a] = s.store.approvals.list("pending");
+		s.store.protected.create({ instanceId: s.radarr.id, arrItemId: 1, itemType: "movie", title: "Movie 1" });
+		const r = await s.engine.approve(a!.id, { actor: "me" });
+		expect(r.status).toBe("blocked");
+		expect(r.lastError).toBe("Manually protected");
+		expect(s.radarrApi.calls).toEqual([]);
+	});
+	it("never fully deletes a series that hasn't ended", async () => {
+		const s = setup({ radarr: [], sonarr: [series(1, { status: "continuing" })] });
+		live(s);
+		s.rule("old", old(100));
+		const log = await s.engine.run({ trigger: "manual" });
+		expect(s.sonarrApi!.calls).toEqual([]);
+		expect(log?.details[0]?.message).toMatch(/Series is "continuing"/);
+		const p = await s.engine.preview();
+		expect(p.candidates).toHaveLength(0);
+	});
+	it("still allows unmonitor or delete_files on a series that hasn't ended", async () => {
+		const s = setup({ radarr: [], sonarr: [series(1, { status: "continuing" })] });
+		live(s);
+		s.rule("old", old(100), { action: "unmonitor" });
+		await s.engine.run({ trigger: "manual" });
+		await approveAll(s);
+		expect(s.sonarrApi!.calls).toEqual(["unmonitor:1"]);
+	});
 	it("watch rules never match when Plex is down", async () => {
 		const s = setup({ radarr: [movie(1)], watch: "fail" });
 		live(s);
@@ -105,6 +193,7 @@ describe("safety", () => {
 		live(s);
 		s.rule("unwatched", { type: "last_watched", params: { operator: "not_watched_in_days", days: 30 } });
 		await s.engine.run({ trigger: "manual" });
+		await approveAll(s);
 		expect(s.radarrApi.calls).toEqual(["delete:2:true"]);
 	});
 	it("skips an instance whose library could not be loaded", async () => {
@@ -120,16 +209,18 @@ describe("safety", () => {
 		const s = setup({ radarr: [movie(1)] });
 		live(s);
 		s.rule("old", old(100));
+		await s.engine.run({ trigger: "manual" });
+		const [a] = s.store.approvals.list("pending");
 		const get = s.radarrApi.get.bind(s.radarrApi);
 		s.radarrApi.get = async (id) => ({ ...(await get(id)), sizeOnDisk: 99 * GB });
-		const log = await s.engine.run({ trigger: "manual" });
+		const r = await s.engine.approve(a!.id, { actor: "me" });
 		expect(s.radarrApi.calls).toEqual([]);
-		expect(log?.details[0]).toMatchObject({ outcome: "blocked" });
-		expect(log?.details[0]?.message).toMatch(/size on disk changed/);
+		expect(r.status).toBe("blocked");
+		expect(r.lastError).toMatch(/size on disk changed/);
 	});
 	it("re-runs retention rules on fresh data at the mutation boundary", async () => {
 		const s = setup({ radarr: [movie(1)] });
-		live(s, { requireApproval: true });
+		live(s);
 		s.rule("old", old(100));
 		await s.engine.run({ trigger: "manual" });
 		const [a] = s.store.approvals.list("pending");
@@ -142,7 +233,7 @@ describe("safety", () => {
 	});
 	it("re-evaluates the matched rule on fresh data at the mutation boundary", async () => {
 		const s = setup({ radarr: [movie(1)] });
-		live(s, { requireApproval: true });
+		live(s);
 		s.rule("old", old(100));
 		await s.engine.run({ trigger: "manual" });
 		const [a] = s.store.approvals.list("pending");
@@ -156,16 +247,19 @@ describe("safety", () => {
 		live(s);
 		s.rule("old", old(100));
 		await s.engine.run({ trigger: "manual" });
+		await approveAll(s);
 		expect(s.sonarrApi!.calls).toEqual(["delete:1:true"]);
 
 		const s2 = setup({ radarr: [], sonarr: [series(1)] });
 		live(s2);
 		s2.rule("old", old(100));
+		await s2.engine.run({ trigger: "manual" });
+		const [a2] = s2.store.approvals.list("pending");
 		const get = s2.sonarrApi!.get.bind(s2.sonarrApi);
 		s2.sonarrApi!.get = async (id) => { const r = await get(id); r.statistics.episodeFileCount++; return r; };
-		const log = await s2.engine.run({ trigger: "manual" });
+		const r = await s2.engine.approve(a2!.id, { actor: "me" });
 		expect(s2.sonarrApi!.calls).toEqual([]);
-		expect(log?.details[0]?.message).toMatch(/files changed/);
+		expect(r.lastError).toMatch(/files changed/);
 	});
 	it("invalid stored rules are skipped with a warning, not executed", async () => {
 		const s = setup({ radarr: [movie(1)] });
@@ -180,7 +274,7 @@ describe("safety", () => {
 describe("approval workflow", () => {
 	const approvalSetup = () => {
 		const s = setup({ radarr: [movie(1), movie(2)] });
-		live(s, { requireApproval: true });
+		live(s);
 		s.rule("old", old(100));
 		return s;
 	};
@@ -240,33 +334,13 @@ describe("approval workflow", () => {
 		expect(s.store.approvals.get(a!.id)?.status).toBe("executed");
 		expect(log?.itemsRemoved).toBe(1);
 	});
-	it("reject then rejection memory suppresses re-proposal for N days", async () => {
-		const s = approvalSetup();
-		s.store.config.update({ rejectionMemoryDays: 30 });
-		await s.engine.run({ trigger: "manual" });
-		const [a] = s.store.approvals.list("pending");
-		s.engine.reject(a!.id, "me");
-		await s.engine.run({ trigger: "manual" });
-		expect(s.store.approvals.list().filter((x) => x.arrItemId === a!.arrItemId)).toHaveLength(1);
-		s.clock.now = new Date(NOW.getTime() + 31 * DAY);
-		await s.engine.run({ trigger: "manual" });
-		expect(s.store.approvals.list().filter((x) => x.arrItemId === a!.arrItemId)).toHaveLength(2);
-	});
-	it("rejection memory is off by default", async () => {
-		const s = approvalSetup();
-		await s.engine.run({ trigger: "manual" });
-		const [a] = s.store.approvals.list("pending");
-		s.engine.reject(a!.id, "me");
-		await s.engine.run({ trigger: "manual" });
-		expect(s.store.approvals.list().filter((x) => x.arrItemId === a!.arrItemId)).toHaveLength(2);
-	});
-	it("pending approvals expire and cannot be approved afterwards", async () => {
+	it("a queued item past its wait can still be run now manually", async () => {
 		const s = approvalSetup();
 		await s.engine.run({ trigger: "manual" });
 		const [a] = s.store.approvals.list("pending");
 		s.clock.now = new Date(NOW.getTime() + 8 * DAY);
-		await expect(s.engine.approve(a!.id, { actor: "me" })).rejects.toBeInstanceOf(ConflictError);
-		expect(s.store.approvals.get(a!.id)?.status).toBe("expired");
+		const r = await s.engine.approve(a!.id, { actor: "me" });
+		expect(r.status).toBe("executed");
 	});
 	it("refuses to execute approvals while in dry-run mode", async () => {
 		const s = approvalSetup();
@@ -274,13 +348,6 @@ describe("approval workflow", () => {
 		const [a] = s.store.approvals.list("pending");
 		s.store.config.update({ dryRun: true });
 		await expect(s.engine.approve(a!.id, { actor: "me" })).rejects.toBeInstanceOf(DryRunError);
-	});
-	it("only pending approvals can be rejected", async () => {
-		const s = approvalSetup();
-		await s.engine.run({ trigger: "manual" });
-		const [a] = s.store.approvals.list("pending");
-		await s.engine.approve(a!.id, { actor: "me" });
-		expect(() => s.engine.reject(a!.id, "me")).toThrow(ConflictError);
 	});
 	it("recovers executions stranded by a crash as retryable, never as done", async () => {
 		const s = approvalSetup();
@@ -317,12 +384,26 @@ describe("run lease & scheduler", () => {
 		s.rule("old", old(100));
 		const sched = createScheduler({ store: s.store, engine: s.engine, log: { info() {}, warn() {}, error() {} }, now: () => s.clock.now });
 		expect(await sched.tick()).toBe(false); // disabled
-		s.store.config.update({ enabled: true, intervalHours: 24 });
-		expect(await sched.tick()).toBe(false); // not due yet
+		s.store.config.update({ enabled: true, intervalEvery: 1, runTime: "00:00" });
+		expect(await sched.tick()).toBe(true); // turning scheduling on runs right away, instead of waiting a full interval
+		expect(await sched.tick()).toBe(false); // schedule advanced, even for a dry run
 		s.clock.now = new Date(NOW.getTime() + 25 * 3_600_000);
 		expect(await sched.tick()).toBe(true);
-		expect(await sched.tick()).toBe(false); // schedule advanced, even for a dry run
+		expect(await sched.tick()).toBe(false); // schedule advanced again
 		expect(s.store.logs.list()[0]?.trigger).toBe("scheduled");
+	});
+	it("turning dry run off also runs right away, even if already enabled and not due", async () => {
+		const s = setup({ radarr: [movie(1)] });
+		s.rule("old", old(100));
+		const sched = createScheduler({ store: s.store, engine: s.engine, log: { info() {}, warn() {}, error() {} }, now: () => s.clock.now });
+		s.store.config.update({ enabled: true, intervalEvery: 1, runTime: "00:00" });
+		await sched.tick(); // consume the immediate run from enabling, back to "not due"
+		expect(await sched.tick()).toBe(false);
+		s.store.config.update({ dryRun: false });
+		expect(await sched.tick()).toBe(true); // going live runs right away too
+		expect(await sched.tick()).toBe(false); // and a no-op save afterwards doesn't re-trigger it
+		s.store.config.update({ dryRun: false });
+		expect(await sched.tick()).toBe(false);
 	});
 	it("closes out run logs orphaned by a crash", () => {
 		const s = setup({ radarr: [] });
@@ -340,15 +421,47 @@ describe("explain & preview", () => {
 		const e = await s.engine.explain(s.radarr.id, 1);
 		expect(e.rules.map((r) => r.state)).toEqual(["true", "false"]);
 	});
-	it("preview lists candidates and totals without writing anything", async () => {
+	it("preview lists candidates and totals, queueing new matches but never executing or logging a run", async () => {
 		const s = setup({ radarr: [movie(1), movie(2)] });
-		live(s);
+		live(s, { queueDelayDays: 5 });
 		s.rule("old", old(100));
 		const p = await s.engine.preview();
 		expect(p.candidates).toHaveLength(2);
 		expect(p.totalBytes).toBe(20 * GB);
 		expect(s.radarrApi.calls).toEqual([]);
 		expect(s.store.logs.list()).toHaveLength(0);
+		// A match is never shown without a countdown: preview queues it on the spot.
+		for (const c of p.candidates as any[]) {
+			expect(c.queue).toMatchObject({ status: "pending" });
+			expect(new Date(c.queue.executeAfter).getTime()).toBe(NOW.getTime() + 5 * DAY);
+		}
+		expect(s.store.approvals.list("pending")).toHaveLength(2);
+	});
+	it("preview during dry run never queues anything", async () => {
+		const s = setup({ radarr: [movie(1)] });
+		s.rule("old", old(100));
+		const p = await s.engine.preview();
+		expect((p.candidates[0] as any).queue).toBeNull();
+		expect(s.store.approvals.list("pending")).toHaveLength(0);
+	});
+	it("preview lists items with no file on disk", async () => {
+		const s = setup({ radarr: [movie(1), movie(2, { hasFile: false, movieFile: null, sizeOnDisk: 0 })] });
+		const p = await s.engine.preview();
+		expect(p.missing.map((m) => m.title)).toEqual(["Movie 2"]);
+		expect(p.missing[0]?.itemType).toBe("movie");
+	});
+	it("preview keeps showing an already-queued item, annotated with its queue status instead of hiding it", async () => {
+		const s = setup({ radarr: [movie(1), movie(2)] });
+		live(s, { queueDelayDays: 5 });
+		s.rule("old", old(100));
+		await s.engine.run({ trigger: "manual" }); // queues both
+		const p = await s.engine.preview();
+		expect(p.candidates).toHaveLength(2);
+		const c1 = p.candidates.find((c: any) => c.arrItemId === 1) as any;
+		expect(c1.queue).toMatchObject({ status: "pending" });
+		expect(c1.queue.id).toBeDefined();
+		expect(new Date(c1.queue.executeAfter).getTime()).toBe(NOW.getTime() + 5 * DAY);
+		expect(p.skipped.some((d: any) => d.message === "Already has an open approval")).toBe(false);
 	});
 });
 
@@ -366,6 +479,7 @@ describe("Plex + Seerr stack", () => {
 		live(s);
 		s.rule("requester watched", requesterWatched);
 		await s.engine.run({ trigger: "manual" });
+		await approveAll(s);
 		expect(s.radarrApi.calls).toEqual(["delete:1:true"]); // 2: only Bob watched; 3: nobody watched
 	});
 	it("an unreachable Seerr blocks request-based removal and warns", async () => {
@@ -397,11 +511,12 @@ describe("Plex + Seerr stack", () => {
 		s.rule("not requested", { op: "and", of: [{ type: "seerr_is_requested", params: { operator: "not_requested" } }, old(100)] });
 		s.rule("keep", { type: "tag_match", params: { operator: "includes_any", tags: ["keep"] } }, { mode: "retention" });
 		await s.engine.run({ trigger: "manual" });
+		await approveAll(s);
 		expect(s.radarrApi.calls).toEqual(["delete:1:true"]);
 	});
 	it("approval execution re-checks Seerr/Plex on fresh data", async () => {
 		const s = setup({ radarr: [movie(1)], watch: { "movie:1001": watchedBy("Alice") }, seerr: { "movie:1001": [alice] } });
-		live(s, { requireApproval: true });
+		live(s);
 		s.rule("requester watched", requesterWatched);
 		await s.engine.run({ trigger: "manual" });
 		const [a] = s.store.approvals.list("pending");
@@ -419,7 +534,7 @@ describe("preview library summary", () => {
 	it("totals movies, series, episodes and missing files", async () => {
 		const s = setup({ radarr: [movie(1), movie(2, { hasFile: false, movieFile: null, sizeOnDisk: 0 })], sonarr: [series(1)] });
 		const p = await s.engine.preview();
-		expect(p.library).toEqual({ movies: 2, series: 1, files: 20, missing: 1, movieBytes: 10 * GB, seriesBytes: 40 * GB, totalBytes: 50 * GB });
+		expect(p.library).toEqual({ movies: 2, series: 1, files: 20, capacityBytes: 14 * GB, missing: 1, movieBytes: 10 * GB, seriesBytes: 40 * GB, totalBytes: 50 * GB });
 	});
 });
 
@@ -464,7 +579,7 @@ describe("delete season", () => {
 	});
 	it("deletes the season through an approval, rechecking first", async () => {
 		const s = stack();
-		live(s, { requireApproval: true });
+		live(s);
 		s.rule("season done", rule(), { action: "delete_season" });
 		await s.engine.run({ trigger: "manual" });
 		const [a] = s.store.approvals.list("pending");
@@ -481,6 +596,7 @@ describe("delete season", () => {
 		live(s);
 		s.rule("old", old(100));
 		await s.engine.run({ trigger: "manual" });
+		await approveAll(s);
 		expect(s.sonarrApi!.calls).toEqual(["delete:1:true"]);
 	});
 	it("lists episodes on disk by season, optionally one season", async () => {

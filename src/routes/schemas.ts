@@ -26,12 +26,12 @@ export const instanceTest = z.object({ type: z.enum(["sonarr", "radarr", "plex",
 export const configUpdate = z
 	.object({
 		enabled: z.boolean(),
-		intervalHours: z.number().int().min(1).max(24 * 30),
+		intervalEvery: z.number().int().min(1).max(365),
+		intervalUnit: z.enum(["days", "weeks", "months"]),
+		runTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
 		dryRun: z.boolean(),
 		maxRemovalsPerRun: z.number().int().min(1).max(10_000),
-		requireApproval: z.boolean(),
-		approvalExpiryDays: z.number().int().min(1).max(365),
-		rejectionMemoryDays: z.number().int().min(0).max(3650).nullable(),
+		queueDelayDays: z.number().int().min(0).max(365),
 	})
 	.partial();
 
@@ -59,13 +59,20 @@ const ruleBase = z.object({
 	instanceFilter: z.array(z.string()).nullable().default(null),
 	excludeTags: z.array(z.string().min(1)).nullable().default(null),
 	excludeTitles: patterns.nullable().default(null),
-	useGlobalRejectionMemory: z.boolean().default(true),
-	rejectionMemoryDays: z.number().int().min(0).nullable().default(0),
 });
 export const ruleCreate = ruleBase;
 export const ruleUpdate = ruleBase.partial();
 export const ruleReorder = z.object({ ids: z.array(z.string()).min(1) });
 
-export const runRequest = z.object({ dryRun: z.boolean().optional() }).default({});
-export const bulkApproval = z.object({ ids: z.array(z.string()).min(1).max(100), action: z.enum(["approve", "reject"]) });
+export const runRequest = z.object({ dryRun: z.boolean().optional(), immediate: z.boolean().optional(), only: z.object({ instanceId: z.string(), arrItemId: z.number().int(), seasonNumber: z.number().int().nullish() }).optional() }).default({});
 export const explainRequest = z.object({ instanceId: z.string(), arrItemId: z.number().int(), seasonNumber: z.number().int().nullish() });
+
+export const protectedCreate = z.object({
+	instanceId: z.string(),
+	arrItemId: z.number().int(),
+	itemType: z.enum(["movie", "series", "season"]),
+	seasonNumber: z.number().int().nullish(),
+	title: z.string().trim().min(1).max(300),
+	note: z.string().trim().max(500).optional(),
+	ignoreRetention: z.boolean().optional(),
+});

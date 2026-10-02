@@ -79,6 +79,9 @@ export function normalizeItem(
 		monitored: raw.monitored === true,
 		hasFile: isMovie ? fileCount > 0 : fileCount > 0,
 		status: str(raw.status),
+		released: isMovie
+			? raw.status === undefined || raw.status === "released" || [raw.digitalRelease, raw.physicalRelease].some((d) => (date(d)?.getTime() ?? Infinity) <= Date.now())
+			: fileCount > 0 || (num(stats.episodeCount) ?? 1) > 0, // Sonarr counts only aired episodes
 		qualityProfileId: profileId,
 		qualityProfileName: profileId !== null ? (ctx.profiles.get(profileId) ?? null) : null,
 		sizeOnDisk: num(isMovie ? raw.sizeOnDisk : stats.sizeOnDisk) ?? 0,

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Db } from "./db.js";
+import { firstRun, nextRun } from "./schedule.js";
 import type { Encryptor } from "./crypto.js";
 import type { CleanupAction, ConfigRecord, Instance, InstanceType, ItemKind, RuleMode, RuleRecord, Service, Trigger } from "./types.js";
 
@@ -38,7 +39,21 @@ export interface ApprovalRow {
 	lastError: string | null;
 	reviewedAt: string | null;
 	executedAt: string | null;
-	expiresAt: string;
+	/** Earliest time Cleanarr is allowed to apply this automatically; a run executes it once this has passed. */
+	executeAfter: string;
+	createdAt: string;
+}
+
+export interface ProtectedItem {
+	id: string;
+	instanceId: string;
+	arrItemId: number;
+	itemType: ItemKind;
+	seasonNumber: number | null;
+	title: string;
+	note: string | null;
+	/** True for an override: retention rules are ignored for this item instead of it being protected. */
+	ignoreRetention: boolean;
 	createdAt: string;
 }
 
@@ -122,31 +137,36 @@ export function createStore(db: Db, enc: Encryptor, now: () => Date = () => new 
 			const r = db.prepare("SELECT * FROM config WHERE id = 1").get() as any;
 			return {
 				enabled: !!r.enabled,
-				intervalHours: r.interval_hours,
+				intervalEvery: r.interval_every,
+				intervalUnit: r.interval_unit,
+				runTime: r.run_time,
 				dryRun: !!r.dry_run,
 				maxRemovalsPerRun: r.max_removals_per_run,
-				requireApproval: !!r.require_approval,
-				approvalExpiryDays: r.approval_expiry_days,
-				rejectionMemoryDays: r.rejection_memory_days,
+				queueDelayDays: r.queue_delay_days,
 				lastRunAt: r.last_run_at,
 				nextRunAt: r.next_run_at,
 			};
 		},
 		update(p: Partial<Omit<ConfigRecord, "lastRunAt" | "nextRunAt">>): ConfigRecord {
-			const c = { ...config.get(), ...p };
+			const cur = config.get();
+			const c = { ...cur, ...p };
 			const enabledNow = c.enabled;
+			// Going live (scheduling turned on, or dry run turned off) shouldn't make the first pickup wait a full interval.
+			const immediate = enabledNow && ((!cur.enabled && c.enabled) || (cur.dryRun && !c.dryRun));
+			const rescheduled = c.intervalEvery !== cur.intervalEvery || c.intervalUnit !== cur.intervalUnit || c.runTime !== cur.runTime;
+			const next = cur.lastRunAt ? nextRun(new Date(cur.lastRunAt), c) : firstRun(now(), c.runTime);
 			db.prepare(
-				`UPDATE config SET enabled=?, interval_hours=?, dry_run=?, max_removals_per_run=?, require_approval=?,
-				 approval_expiry_days=?, rejection_memory_days=?,
-				 next_run_at = CASE WHEN ? = 0 THEN NULL WHEN next_run_at IS NULL THEN ? ELSE next_run_at END WHERE id = 1`,
+				`UPDATE config SET enabled=?, interval_every=?, interval_unit=?, run_time=?, dry_run=?, max_removals_per_run=?,
+				 queue_delay_days=?,
+				 next_run_at = CASE WHEN ? = 0 THEN NULL WHEN ? = 1 THEN ? WHEN ? = 1 OR next_run_at IS NULL THEN ? ELSE next_run_at END WHERE id = 1`,
 			).run(
-				c.enabled ? 1 : 0, c.intervalHours, c.dryRun ? 1 : 0, c.maxRemovalsPerRun, c.requireApproval ? 1 : 0,
-				c.approvalExpiryDays, c.rejectionMemoryDays, enabledNow ? 1 : 0, iso(new Date(now().getTime() + c.intervalHours * 3_600_000)),
+				c.enabled ? 1 : 0, c.intervalEvery, c.intervalUnit, c.runTime, c.dryRun ? 1 : 0, c.maxRemovalsPerRun,
+				c.queueDelayDays, enabledNow ? 1 : 0, immediate ? 1 : 0, iso(now()), rescheduled ? 1 : 0, iso(next),
 			);
 			return config.get();
 		},
-		markRun(at: Date, intervalHours: number) {
-			db.prepare("UPDATE config SET last_run_at=?, next_run_at=? WHERE id=1").run(iso(at), iso(new Date(at.getTime() + intervalHours * 3_600_000)));
+		markRun(at: Date) {
+			db.prepare("UPDATE config SET last_run_at=?, next_run_at=? WHERE id=1").run(iso(at), iso(nextRun(at, config.get())));
 		},
 		/** Cross-process run lease. Stale leases (crashed run) are reclaimed after `staleMs`. */
 		claimRun(staleMs: number): string | null {
@@ -175,8 +195,6 @@ export function createStore(db: Db, enc: Encryptor, now: () => Date = () => new 
 		instanceFilter: parse<string[]>(r.instance_filter),
 		excludeTags: parse<string[]>(r.exclude_tags),
 		excludeTitles: parse<string[]>(r.exclude_titles),
-		useGlobalRejectionMemory: !!r.use_global_rejection_memory,
-		rejectionMemoryDays: r.rejection_memory_days,
 	});
 
 	type RuleInput = Omit<RuleRecord, "id">;
@@ -191,10 +209,10 @@ export function createStore(db: Db, enc: Encryptor, now: () => Date = () => new 
 			const ts = iso(now());
 			db.prepare(
 				`INSERT INTO rules (id,name,enabled,priority,mode,action,expression,service_filter,instance_filter,exclude_tags,exclude_titles,
-				 use_global_rejection_memory,rejection_memory_days,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+				 created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			).run(
 				id, r.name, r.enabled ? 1 : 0, r.priority, r.mode, r.action, JSON.stringify(r.expression), json(r.serviceFilter), json(r.instanceFilter),
-				json(r.excludeTags), json(r.excludeTitles), r.useGlobalRejectionMemory ? 1 : 0, r.rejectionMemoryDays, ts, ts,
+				json(r.excludeTags), json(r.excludeTitles), ts, ts,
 			);
 			return rules.get(id) as RuleRecord;
 		},
@@ -204,10 +222,10 @@ export function createStore(db: Db, enc: Encryptor, now: () => Date = () => new 
 			const r = { ...cur, ...patch };
 			db.prepare(
 				`UPDATE rules SET name=?,enabled=?,priority=?,mode=?,action=?,expression=?,service_filter=?,instance_filter=?,exclude_tags=?,
-				 exclude_titles=?,use_global_rejection_memory=?,rejection_memory_days=?,updated_at=? WHERE id=?`,
+				 exclude_titles=?,updated_at=? WHERE id=?`,
 			).run(
 				r.name, r.enabled ? 1 : 0, r.priority, r.mode, r.action, JSON.stringify(r.expression), json(r.serviceFilter), json(r.instanceFilter),
-				json(r.excludeTags), json(r.excludeTitles), r.useGlobalRejectionMemory ? 1 : 0, r.rejectionMemoryDays, iso(now()), id,
+				json(r.excludeTags), json(r.excludeTitles), iso(now()), id,
 			);
 			return rules.get(id);
 		},
@@ -238,7 +256,7 @@ export function createStore(db: Db, enc: Encryptor, now: () => Date = () => new 
 		lastError: r.last_error,
 		reviewedAt: r.reviewed_at,
 		executedAt: r.executed_at,
-		expiresAt: r.expires_at,
+		executeAfter: r.execute_after,
 		createdAt: r.created_at,
 	});
 
@@ -261,29 +279,30 @@ export function createStore(db: Db, enc: Encryptor, now: () => Date = () => new 
 			for (const r of db.prepare("SELECT status, COUNT(*) n FROM approvals GROUP BY status").all() as any[]) out[r.status] = r.n;
 			return out;
 		},
+		/** Open approval rows keyed by target, so callers can show their actual status (e.g. queue countdown) instead of just knowing one exists. */
+		openByTarget(): Map<string, ApprovalRow> {
+			const rows = db.prepare(`SELECT * FROM approvals WHERE status IN (${OPEN.map(() => "?").join(",")})`).all(...OPEN) as any[];
+			return new Map(rows.map((r) => [targetKey(r), approvalRow(r)] as const));
+		},
 		/** Targets that already have unfinished work; the engine must not propose them again. */
 		openTargets(): Set<string> {
-			const rows = db.prepare(`SELECT instance_id, arr_item_id, item_type, season_number FROM approvals WHERE status IN (${OPEN.map(() => "?").join(",")})`).all(...OPEN) as any[];
-			return new Set(rows.map(targetKey));
-		},
-		/** Targets rejected recently enough that the rule's rejection memory still suppresses them. */
-		rejectedSince(): Array<{ key: string; ruleId: string; reviewedAt: string }> {
-			const rows = db.prepare("SELECT instance_id, arr_item_id, item_type, season_number, rule_id, reviewed_at FROM approvals WHERE status = 'rejected' AND reviewed_at IS NOT NULL").all() as any[];
-			return rows.map((r) => ({ key: targetKey(r), ruleId: r.rule_id, reviewedAt: r.reviewed_at }));
+			return new Set(approvals.openByTarget().keys());
 		},
 		create(a: {
 			instanceId: string; arrItemId: number; seasonNumber?: number | null; itemType: ItemKind; title: string; year: number | null; sizeOnDisk: number;
-			ruleId: string; ruleName: string; reason: string; action: CleanupAction; safetySnapshot: SafetySnapshot; expiresAt: Date;
+			ruleId: string; ruleName: string; reason: string; action: CleanupAction; safetySnapshot: SafetySnapshot; executeAfter: Date;
 		}): ApprovalRow {
 			const id = randomUUID();
 			db.prepare(
-				`INSERT INTO approvals (id,instance_id,arr_item_id,season_number,item_type,title,year,size_on_disk,rule_id,rule_name,reason,action,safety_snapshot,expires_at,created_at)
+				`INSERT INTO approvals (id,instance_id,arr_item_id,season_number,item_type,title,year,size_on_disk,rule_id,rule_name,reason,action,safety_snapshot,execute_after,created_at)
 				 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			).run(id, a.instanceId, a.arrItemId, a.seasonNumber ?? null, a.itemType, a.title, a.year, a.sizeOnDisk, a.ruleId, a.ruleName, a.reason, a.action, JSON.stringify(a.safetySnapshot), iso(a.expiresAt), iso(now()));
+			).run(id, a.instanceId, a.arrItemId, a.seasonNumber ?? null, a.itemType, a.title, a.year, a.sizeOnDisk, a.ruleId, a.ruleName, a.reason, a.action, JSON.stringify(a.safetySnapshot), iso(a.executeAfter), iso(now()));
 			return approvals.get(id) as ApprovalRow;
 		},
-		expireDue(): number {
-			return db.prepare("UPDATE approvals SET status='expired' WHERE status IN ('pending','retry_pending') AND expires_at < ?").run(iso(now())).changes;
+		/** Queued items whose wait has elapsed; a run executes these automatically. With ignoreDelay, returns the whole pending queue regardless of wait (used by "Reclaim now"). */
+		due(limit: number, ignoreDelay = false): ApprovalRow[] {
+			if (ignoreDelay) return db.prepare("SELECT * FROM approvals WHERE status = 'pending' ORDER BY execute_after LIMIT ?").all(limit).map(approvalRow);
+			return db.prepare("SELECT * FROM approvals WHERE status = 'pending' AND execute_after <= ? ORDER BY execute_after LIMIT ?").all(iso(now()), limit).map(approvalRow);
 		},
 		/** Compare-and-set status transition. Returns true only for the caller that won. */
 		transition(id: string, from: ApprovalStatus[], to: ApprovalStatus, extra: { token?: string | null; error?: string | null; reviewed?: boolean; executed?: boolean; bumpAttempt?: boolean } = {}): boolean {
@@ -308,6 +327,32 @@ export function createStore(db: Db, enc: Encryptor, now: () => Date = () => new 
 		retryable(limit: number): ApprovalRow[] {
 			return db.prepare("SELECT * FROM approvals WHERE status IN ('retry_pending') AND attempt_count < 3 ORDER BY created_at LIMIT ?").all(limit).map(approvalRow);
 		},
+	};
+
+	// ── Manual protection ──────────────────────────────────────────────────
+	const protectedRow = (r: any): ProtectedItem => ({
+		id: r.id, instanceId: r.instance_id, arrItemId: r.arr_item_id, itemType: r.item_type, seasonNumber: r.season_number ?? null, title: r.title, note: r.note, ignoreRetention: !!r.ignore_retention, createdAt: r.created_at,
+	});
+	const protectedTargetKey = (r: { instance_id: string; item_type: string; arr_item_id: number; season_number: number | null }) =>
+		`${r.instance_id}:${r.item_type}:${r.arr_item_id}${r.season_number != null ? `:${r.season_number}` : ""}`;
+	const protectedItems = {
+		list: (): ProtectedItem[] => db.prepare("SELECT * FROM protected_items ORDER BY created_at DESC").all().map(protectedRow),
+		create(p: { instanceId: string; arrItemId: number; itemType: ItemKind; seasonNumber?: number | null; title: string; note?: string | null; ignoreRetention?: boolean }): ProtectedItem {
+			const ignore = p.ignoreRetention ? 1 : 0;
+			const existing = db
+				.prepare("SELECT * FROM protected_items WHERE instance_id = ? AND arr_item_id = ? AND item_type = ? AND season_number IS ? AND ignore_retention = ?")
+				.get(p.instanceId, p.arrItemId, p.itemType, p.seasonNumber ?? null, ignore) as any;
+			if (existing) return protectedRow(existing);
+			const id = randomUUID();
+			db.prepare("INSERT INTO protected_items (id,instance_id,arr_item_id,item_type,season_number,title,note,ignore_retention,created_at) VALUES (?,?,?,?,?,?,?,?,?)").run(
+				id, p.instanceId, p.arrItemId, p.itemType, p.seasonNumber ?? null, p.title, p.note ?? null, ignore, iso(now()),
+			);
+			return protectedItems.list().find((x) => x.id === id) as ProtectedItem;
+		},
+		delete: (id: string) => db.prepare("DELETE FROM protected_items WHERE id = ?").run(id).changes > 0,
+		/** Same key shape the engine builds for a LibraryItem, for a fast membership check during planning. */
+		targetKeys: (ignoreRetention = false): Set<string> =>
+			new Set((db.prepare("SELECT instance_id, arr_item_id, item_type, season_number FROM protected_items WHERE ignore_retention = ?").all(ignoreRetention ? 1 : 0) as any[]).map(protectedTargetKey)),
 	};
 
 	// ── Run logs ───────────────────────────────────────────────────────────
@@ -372,5 +417,5 @@ export function createStore(db: Db, enc: Encryptor, now: () => Date = () => new 
 		},
 	};
 
-	return { instances, config, rules, approvals, logs, audit };
+	return { instances, config, rules, approvals, protected: protectedItems, logs, audit };
 }

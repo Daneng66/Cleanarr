@@ -27,6 +27,7 @@ export class FakeArr implements ArrApi {
 		return structuredClone(i);
 	}
 	async tags() { return [{ id: 1, label: "keep" }, { id: 2, label: "kids" }]; }
+	async diskspace() { return [{ path: "/data", freeSpace: 4 * GB, totalSpace: 14 * GB }]; }
 	async qualityProfiles() { return [{ id: 1, name: "HD-1080p" }, { id: 2, name: "Any" }]; }
 	async episodeFiles(id: number) { return structuredClone(this.files.get(id) ?? []); }
 	async deleteItem(id: number, o: { deleteFiles: boolean }) {
@@ -78,6 +79,7 @@ export function setup(opts: { radarr?: RawItem[]; sonarr?: RawItem[]; watch?: Re
 		log: { info() {}, warn() {}, error() {} },
 		arr: (i) => arrs.get(i.id) as ArrApi,
 		seerr: () => ({
+			async clear() { return 0; },
 			async load() {
 				if (opts.seerr === "fail" || !opts.seerr) throw new Error("seerr down");
 				const m = opts.seerr;
@@ -99,7 +101,7 @@ export function setup(opts: { radarr?: RawItem[]; sonarr?: RawItem[]; watch?: Re
 	const rule = (name: string, expression: unknown, extra: Record<string, unknown> = {}) =>
 		store.rules.create({
 			name, enabled: true, priority: 0, mode: "cleanup", action: "delete", expression, serviceFilter: null, instanceFilter: null,
-			excludeTags: null, excludeTitles: null, useGlobalRejectionMemory: true, rejectionMemoryDays: 0, ...extra,
+			excludeTags: null, excludeTitles: null, ...extra,
 		} as never);
 	return { db, store, engine, clock, radarr, sonarr, arrs, radarrApi: arrs.get(radarr.id) as FakeArr, sonarrApi: sonarr ? (arrs.get(sonarr.id) as FakeArr) : undefined, rule };
 }

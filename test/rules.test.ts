@@ -104,7 +104,7 @@ describe("expression validation", () => {
 });
 
 describe("filters", () => {
-	const base: RuleRecord = { id: "r", name: "r", enabled: true, priority: 0, mode: "cleanup", action: "delete", expression: {}, serviceFilter: null, instanceFilter: null, excludeTags: null, excludeTitles: null, useGlobalRejectionMemory: true, rejectionMemoryDays: 0 };
+	const base: RuleRecord = { id: "r", name: "r", enabled: true, priority: 0, mode: "cleanup", action: "delete", expression: {}, serviceFilter: null, instanceFilter: null, excludeTags: null, excludeTitles: null };
 	it("excludes by tag label, title pattern, service and instance", () => {
 		const tagged = item({ tags: [1] });
 		expect(passesFilters(tagged, { ...base, excludeTags: ["KEEP"] }).ok).toBe(false);
@@ -216,5 +216,15 @@ describe("rule templates", () => {
 		expect(byId.stale).toMatchObject({ watch: true, seerr: false });
 		expect(byId["requester-done"]).toMatchObject({ watch: true, seerr: true });
 		expect(byId["protect-keep-tag"]).toMatchObject({ watch: false, seerr: false });
+	});
+});
+
+describe("schedule", () => {
+	it("computes next run by days/weeks/months at a time, clamping month ends", async () => {
+		const { nextRun } = await import("../src/schedule.js");
+		const s = (intervalEvery: number, intervalUnit: "days" | "weeks" | "months") => ({ intervalEvery, intervalUnit, runTime: "04:30" });
+		expect(nextRun(new Date(2026, 0, 31, 9), s(1, "months")).getTime()).toBe(new Date(2026, 1, 28, 4, 30).getTime());
+		expect(nextRun(new Date(2026, 0, 1, 9), s(2, "weeks")).getTime()).toBe(new Date(2026, 0, 15, 4, 30).getTime());
+		expect(nextRun(new Date(2026, 0, 1, 9), s(3, "days")).getTime()).toBe(new Date(2026, 0, 4, 4, 30).getTime());
 	});
 });

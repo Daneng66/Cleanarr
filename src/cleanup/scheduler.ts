@@ -21,7 +21,7 @@ export function createScheduler(deps: { store: Store; engine: Engine; log: Logge
 			if (!(e instanceof RunInProgressError)) {
 				log.error({ err: (e as Error).message }, "scheduled cleanup failed");
 				// Back off a full interval so a persistent failure can't hot-loop.
-				store.config.markRun(now(), cfg.intervalHours);
+				store.config.markRun(now());
 			}
 			return false;
 		} finally {

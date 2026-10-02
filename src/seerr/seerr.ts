@@ -12,10 +12,14 @@ export interface SeerrRequest {
 	requesters: string[];
 	/** TV requests: the season numbers asked for; null for movies or when Seerr didn't say. */
 	seasons?: number[] | null;
+	/** Seerr's media record behind the request; deleting it clears the title and all its requests. */
+	mediaId?: number;
 }
 
 export interface SeerrProvider {
 	load(): Promise<{ lookup: (item: LibraryItem) => SeerrRequest[]; warnings: string[] }>;
+	/** Removes the title's media record (and so its requests) from Seerr. Returns how many records were deleted. */
+	clear(item: LibraryItem): Promise<number>;
 }
 
 const PAGE = 100;
@@ -24,7 +28,16 @@ const DECLINED = 3;
 
 export function createSeerrProvider(instance: Pick<Instance, "url" | "apiKey">, fetchFn: FetchFn = fetch): SeerrProvider {
 	const base = instance.url.replace(/\/+$/, "");
-	return {
+	const headers = { "X-Api-Key": instance.apiKey, Accept: "application/json" };
+	const provider: SeerrProvider = {
+		async clear(item) {
+			const ids = new Set((await this.load()).lookup(item).flatMap((r) => (r.mediaId === undefined ? [] : [r.mediaId])));
+			for (const id of ids) {
+				const res = await fetchFn(`${base}/api/v1/media/${id}`, { method: "DELETE", headers, signal: AbortSignal.timeout(15_000) });
+				if (!res.ok && res.status !== 404) throw new Error(`Seerr media delete failed: HTTP ${res.status}`);
+			}
+			return ids.size;
+		},
 		async load() {
 			const byKey = new Map<string, SeerrRequest[]>();
 			let skip = 0;
@@ -41,6 +54,7 @@ export function createSeerrProvider(instance: Pick<Instance, "url" | "apiKey">, 
 					const u = r.requestedBy ?? {};
 					const req: SeerrRequest = {
 						id: r.id,
+						mediaId: typeof r.media.id === "number" ? r.media.id : undefined,
 						status: r.status,
 						createdAt: new Date(r.createdAt),
 						updatedAt: new Date(r.updatedAt ?? r.createdAt),
@@ -72,6 +86,7 @@ export function createSeerrProvider(instance: Pick<Instance, "url" | "apiKey">, 
 			};
 		},
 	};
+	return provider;
 }
 
 /** Display names of every Seerr user, for picking requesters in the rule editor. */

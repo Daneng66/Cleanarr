@@ -4,7 +4,7 @@ export type ItemKind = "movie" | "series" | "season";
 /** delete_season: delete one season's episode files and unmonitor that season. Only rules with it see season items. */
 export type CleanupAction = "delete" | "unmonitor" | "delete_files" | "delete_season";
 export type RuleMode = "cleanup" | "retention";
-export type Trigger = "scheduled" | "manual" | "approval" | "retry";
+export type Trigger = "scheduled" | "manual" | "approval" | "retry" | "queue" | "pickup";
 
 export interface Instance {
 	id: string;
@@ -49,6 +49,8 @@ export interface LibraryItem {
 	monitored: boolean;
 	hasFile: boolean;
 	status: string | null;
+	/** False when nothing has released/aired yet, so a missing file is expected. Undefined counts as released. */
+	released?: boolean;
 	qualityProfileId: number | null;
 	qualityProfileName: string | null;
 	sizeOnDisk: number;
@@ -105,19 +107,18 @@ export interface RuleRecord {
 	instanceFilter: string[] | null;
 	excludeTags: string[] | null;
 	excludeTitles: string[] | null;
-	useGlobalRejectionMemory: boolean;
-	rejectionMemoryDays: number | null;
 }
 
 export interface ConfigRecord {
 	enabled: boolean;
-	intervalHours: number;
+	intervalEvery: number;
+	intervalUnit: "days" | "weeks" | "months";
+	/** Local time of day, "HH:MM". */
+	runTime: string;
 	dryRun: boolean;
 	maxRemovalsPerRun: number;
-	requireApproval: boolean;
-	approvalExpiryDays: number;
-	/** 0 = off, N = days, null = forever. */
-	rejectionMemoryDays: number | null;
+	/** How long a match waits in the queue before Cleanarr applies it automatically. 0 = next run. */
+	queueDelayDays: number;
 	lastRunAt: string | null;
 	nextRunAt: string | null;
 }

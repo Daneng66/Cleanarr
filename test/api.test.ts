@@ -79,7 +79,7 @@ describe("rules & config", () => {
 	});
 	it("defaults to the safe posture", async () => {
 		const { app: a } = app();
-		expect((await a.inject("/api/config")).json()).toMatchObject({ enabled: false, dryRun: true, requireApproval: true });
+		expect((await a.inject("/api/config")).json()).toMatchObject({ enabled: false, dryRun: true });
 	});
 	it("exposes rule type metadata for the UI", async () => {
 		const { app: a } = app();
@@ -115,19 +115,51 @@ describe("runs and approvals over HTTP", () => {
 		expect(res.statusCode).toBe(409);
 		expect(res.json().code).toBe("dry_run");
 	});
-	it("bulk reject", async () => {
-		const { s, app: a } = app("", { radarr: [movie(1), movie(2)] });
+	it("preview includes already-queued items with their countdown, instead of hiding them", async () => {
+		const { app: a } = app("", { radarr: [movie(1), movie(2)] });
 		await a.inject({ method: "POST", url: "/api/rules", payload: { name: "old", expression: old(100) } });
 		await a.inject({ method: "PUT", url: "/api/config", payload: { dryRun: false } });
 		await a.inject({ method: "POST", url: "/api/run", payload: {} });
-		const ids = s.store.approvals.list("pending").map((x) => x.id);
-		const res = (await a.inject({ method: "POST", url: "/api/approvals/bulk", payload: { ids, action: "reject" } })).json();
-		expect(res.results.every((r: any) => r.ok && r.status === "rejected")).toBe(true);
+		const p = (await a.inject({ method: "POST", url: "/api/preview" })).json();
+		expect(p.candidates).toHaveLength(2);
+		expect(p.candidates.every((c: any) => c.queue?.status === "pending" && c.queue?.id)).toBe(true);
 	});
 	it("explain endpoint", async () => {
 		const { s, app: a } = app();
 		await a.inject({ method: "POST", url: "/api/rules", payload: { name: "old", expression: old(100) } });
 		const res = await a.inject({ method: "POST", url: "/api/explain", payload: { instanceId: s.radarr.id, arrItemId: 1 } });
 		expect(res.json().rules[0].state).toBe("true");
+	});
+	it("a queued item auto-executes once its wait elapses, via a later run", async () => {
+		const { s, app: a } = app();
+		await a.inject({ method: "POST", url: "/api/rules", payload: { name: "old", expression: old(100) } });
+		await a.inject({ method: "PUT", url: "/api/config", payload: { dryRun: false, queueDelayDays: 1 } });
+		await a.inject({ method: "POST", url: "/api/run", payload: {} });
+		expect(s.radarrApi.calls).toEqual([]);
+		s.clock.now = new Date(s.clock.now.getTime() + 25 * 3_600_000);
+		const run2 = (await a.inject({ method: "POST", url: "/api/run", payload: {} })).json();
+		expect(run2.itemsRemoved).toBe(1);
+		expect(s.radarrApi.calls).toEqual(["delete:1:true"]);
+	});
+});
+
+describe("manual protection", () => {
+	it("create, list, delete, and link endpoint", async () => {
+		const { s, app: a } = app();
+		const created = (await a.inject({ method: "POST", url: "/api/protected", payload: { instanceId: s.radarr.id, arrItemId: 1, itemType: "movie", title: "Movie 1" } })).json();
+		expect((await a.inject("/api/protected")).json()).toHaveLength(1);
+		expect((await a.inject({ method: "DELETE", url: `/api/protected/${created.id}` })).statusCode).toBe(204);
+		expect((await a.inject("/api/protected")).json()).toHaveLength(0);
+		const link = (await a.inject(`/api/link/${s.radarr.id}/1`)).json();
+		expect(link.url).toMatch(/\/movie\//);
+	});
+	it("a protected item is never queued", async () => {
+		const { s, app: a } = app();
+		await a.inject({ method: "POST", url: "/api/protected", payload: { instanceId: s.radarr.id, arrItemId: 1, itemType: "movie", title: "Movie 1" } });
+		await a.inject({ method: "POST", url: "/api/rules", payload: { name: "old", expression: old(100) } });
+		await a.inject({ method: "PUT", url: "/api/config", payload: { dryRun: false } });
+		await a.inject({ method: "POST", url: "/api/run", payload: {} });
+		expect(s.radarrApi.calls).toEqual([]);
+		expect((await a.inject("/api/approvals?status=pending")).json()).toHaveLength(0);
 	});
 });

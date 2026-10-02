@@ -3,7 +3,7 @@ import type { Instance, LibraryItem, WatchInfo } from "../types.js";
 
 export interface WatchProvider {
 	/** Resolves lookup for the given items; throws when the history can't be read completely. */
-	load(): Promise<{ lookup: (item: LibraryItem) => WatchInfo | undefined; warnings: string[] }>;
+	load(): Promise<{ lookup: (item: LibraryItem) => WatchInfo | undefined; certLookup?: (item: LibraryItem) => string | undefined; warnings: string[] }>;
 }
 
 const PAGE = 500;
@@ -23,6 +23,10 @@ interface PlexMeta {
 	parentIndex?: number;
 	index?: number;
 	Guid?: Array<{ id?: string }>;
+	/** Library listing rows only: Plex's age rating for the movie/show, e.g. "TV-14". */
+	contentRating?: string;
+	/** Plex's unified numeric age rating (e.g. 14); some items have only this, no label. */
+	contentRatingAge?: number;
 }
 
 /**
@@ -72,11 +76,23 @@ export function createPlexProvider(instance: Pick<Instance, "url" | "apiKey">, f
 
 			// ratingKey -> external ids for every movie / show Plex knows about.
 			const guidsByKey = new Map<string, string[]>();
+			// "tmdb:123" / "tvdb:456" -> Plex's content rating for that title.
+			const certByExternalId = new Map<string, string>();
 			for (const s of sections.filter((x) => x.type === "movie" || x.type === "show")) {
 				const metas = await paged<PlexMeta>(`/library/sections/${encodeURIComponent(s.key)}/all?includeGuids=1`, MAX_LIBRARY_ITEMS, `library "${s.title}"`);
 				for (const m of metas) {
 					if (m.ratingKey === undefined) continue;
-					guidsByKey.set(String(m.ratingKey), (m.Guid ?? []).map((g) => g.id ?? "").filter(Boolean));
+					const guids = (m.Guid ?? []).map((g) => g.id ?? "").filter(Boolean);
+					guidsByKey.set(String(m.ratingKey), guids);
+					// Prefer the labeled rating (e.g. "TV-14"); some items only have Plex's numeric unified age rating.
+					// Plex's API prefixes the label with a country code (e.g. "gb/U"); its own UI shows just "U".
+					const rating = (m.contentRating || (typeof m.contentRatingAge === "number" ? String(m.contentRatingAge) : undefined))?.replace(/^[a-z]{2}\//i, "");
+					if (rating) {
+						for (const g of guids) {
+							const mm = /^(tmdb|tvdb):\/\/(\d+)$/.exec(g);
+							if (mm) certByExternalId.set(`${mm[1]}:${mm[2]}`, rating);
+						}
+					}
 				}
 			}
 
@@ -137,6 +153,9 @@ export function createPlexProvider(instance: Pick<Instance, "url" | "apiKey">, f
 					const kind = item.season ? "season" : "series";
 					const sfx = item.season ? `:${item.season.number}` : "";
 					return (item.tvdbId !== null ? byKey.get(`${kind}:tvdb:${item.tvdbId}${sfx}`) : undefined) ?? (item.tmdbId !== null ? byKey.get(`${kind}:tmdb:${item.tmdbId}${sfx}`) : undefined);
+				},
+				certLookup(item: LibraryItem) {
+					return (item.tvdbId !== null ? certByExternalId.get(`tvdb:${item.tvdbId}`) : undefined) ?? (item.tmdbId !== null ? certByExternalId.get(`tmdb:${item.tmdbId}`) : undefined);
 				},
 			};
 		},

@@ -95,6 +95,33 @@ describe("Plex provider", () => {
 		await expect(createPlexProvider({ url: "http://plex", apiKey: "wrong" }, fakePlex().fn).load()).rejects.toThrow(/401.*token/i);
 		await expect(createPlexProvider({ url: "http://plex", apiKey: "tok" }, fakePlex({ failHistory: true }).fn).load()).rejects.toThrow(/history.*500/);
 	});
+	it("falls back certification from Plex's content rating, keyed by tmdb/tvdb id, stripping the country prefix", async () => {
+		const { fn } = fakePlex();
+		const items = { "1": [{ ratingKey: "100", Guid: [{ id: "tmdb://1001" }], contentRating: "R" }], "2": [{ ratingKey: "200", Guid: [{ id: "tvdb://2001" }], contentRating: "gb/U" }] };
+		const withRatings = (async (input: any, init?: any) => {
+			const u = new URL(String(input));
+			const m = /^\/library\/sections\/(\d+)\/all$/.exec(u.pathname);
+			if (m) return json({ MediaContainer: { totalSize: (items as any)[m[1]!]?.length ?? 0, Metadata: (items as any)[m[1]!] ?? [] } });
+			return fn(input, init);
+		}) as typeof fetch;
+		const { certLookup } = await createPlexProvider({ url: "http://plex", apiKey: "tok" }, withRatings).load();
+		expect(certLookup?.(mItem(1))).toBe("R");
+		expect(certLookup?.(sItem(1))).toBe("U");
+		expect(certLookup?.(mItem(2))).toBeUndefined();
+	});
+	it("falls back to Plex's numeric unified age rating when there's no labeled contentRating", async () => {
+		const { fn } = fakePlex();
+		const items = { "1": [{ ratingKey: "100", Guid: [{ id: "tmdb://1001" }], contentRatingAge: 16 }], "2": [{ ratingKey: "200", Guid: [{ id: "tvdb://2001" }], contentRating: "TV-14", contentRatingAge: 14 }] };
+		const withRatings = (async (input: any, init?: any) => {
+			const u = new URL(String(input));
+			const m = /^\/library\/sections\/(\d+)\/all$/.exec(u.pathname);
+			if (m) return json({ MediaContainer: { totalSize: (items as any)[m[1]!]?.length ?? 0, Metadata: (items as any)[m[1]!] ?? [] } });
+			return fn(input, init);
+		}) as typeof fetch;
+		const { certLookup } = await createPlexProvider({ url: "http://plex", apiKey: "tok" }, withRatings).load();
+		expect(certLookup?.(mItem(1))).toBe("16"); // no label, falls back to the numeric age
+		expect(certLookup?.(sItem(1))).toBe("TV-14"); // label present, takes priority over the age
+	});
 	it("connection test", async () => {
 		await expect(testPlex({ url: "http://plex", apiKey: "tok" }, fakePlex().fn)).resolves.toBeUndefined();
 		await expect(testPlex({ url: "http://plex", apiKey: "bad" }, fakePlex().fn)).rejects.toThrow(/rejected the token/);
@@ -210,12 +237,30 @@ describe("migration 4", () => {
 		db.prepare("INSERT INTO rules (id,name,expression,created_at,updated_at) VALUES ('r1','R','{}','now','now')").run();
 		db.prepare("INSERT INTO approvals (id,instance_id,arr_item_id,item_type,title,rule_id,rule_name,reason,action,safety_snapshot,expires_at,created_at) VALUES ('a1','i',1,'movie','M','r1','R','x','delete','{}','now','now')").run();
 
-		migrate(db);
+		migrate(db, 4);
 
 		expect(db.prepare("SELECT id, action FROM rules").all()).toEqual([{ id: "r1", action: "delete" }]);
 		expect(db.prepare("SELECT id, season_number FROM approvals").all()).toEqual([{ id: "a1", season_number: null }]);
 		expect(() => db.prepare("UPDATE rules SET action='delete_season'").run()).not.toThrow();
 		expect(() => db.prepare("INSERT INTO approvals (id,instance_id,arr_item_id,season_number,item_type,title,rule_id,rule_name,reason,action,safety_snapshot,expires_at,created_at) VALUES ('a2','i',1,2,'season','S','r1','R','x','delete_season','{}','now','now')").run()).not.toThrow();
 		expect(db.pragma("user_version", { simple: true })).toBe(4);
+	});
+});
+
+describe("migration 5", () => {
+	it("replaces approval_expiry_days/require_approval with queue_delay_days, renames expires_at, and adds protected_items", () => {
+		const db = new Database(":memory:");
+		migrate(db, 4);
+		db.prepare("UPDATE config SET approval_expiry_days = 9, require_approval = 0 WHERE id = 1").run();
+		db.prepare("INSERT INTO rules (id,name,expression,created_at,updated_at) VALUES ('r1','R','{}','now','now')").run();
+		db.prepare("INSERT INTO approvals (id,instance_id,arr_item_id,item_type,title,rule_id,rule_name,reason,action,safety_snapshot,expires_at,created_at) VALUES ('a1','i',1,'movie','M','r1','R','x','delete','{}','2026-01-01','now')").run();
+
+		migrate(db, 5);
+
+		expect(db.prepare("SELECT queue_delay_days FROM config WHERE id=1").get()).toEqual({ queue_delay_days: 9 });
+		expect(db.prepare("SELECT name FROM pragma_table_info('config') WHERE name IN ('require_approval','approval_expiry_days')").all()).toEqual([]);
+		expect(db.prepare("SELECT id, execute_after FROM approvals WHERE id='a1'").get()).toEqual({ id: "a1", execute_after: "2026-01-01" });
+		expect(() => db.prepare("INSERT INTO protected_items (id,instance_id,arr_item_id,item_type,season_number,title,created_at) VALUES ('p1','i',1,'movie',NULL,'M','now')").run()).not.toThrow();
+		expect(db.pragma("user_version", { simple: true })).toBe(5);
 	});
 });

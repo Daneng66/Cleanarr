@@ -218,7 +218,7 @@ const defs: RuleTypeDef[] = [
 		type: "certification",
 		label: "Content rating",
 		group: "Library",
-		description: "Age rating from Radarr/Sonarr. \"Suitable for kids\" recognises children's ratings from many countries. Items without a rating are unknown.",
+		description: "Age rating from Plex when available, otherwise from Radarr/Sonarr. \"Suitable for kids\" recognises children's ratings from many countries. Items without a rating are unknown.",
 		fields: [
 			{ name: "operator", label: "Operator", kind: "select", options: ["suitable_for_kids", "includes_any", "excludes_all"] },
 			{ name: "ratings", label: "Ratings", kind: "list", placeholder: "e.g. PG-13, TV-14", optional: true, hideFor: ["suitable_for_kids"] },

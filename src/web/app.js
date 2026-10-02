@@ -22,6 +22,7 @@ const ICONS = {
 	flagged: [["rect", { x: 2, y: 3, width: 8, height: 10, rx: 1, fill: "currentColor", stroke: "none" }], ["path", { d: "M12 5l3 3-3 3" }]],
 	queued: [["rect", { x: 3, y: 3, width: 10, height: 10, rx: 1 }], ["rect", { x: 3, y: 8, width: 10, height: 5, fill: "currentColor", stroke: "none" }]],
 	protected: [["path", { d: "M8 1.8l5.2 2v4.1c0 3.1-2.2 5.3-5.2 6.3-3-1-5.2-3.2-5.2-6.3V3.8z" }]],
+	unprotected: [["path", { d: "M8 1.8l5.2 2v4.1c0 3.1-2.2 5.3-5.2 6.3-3-1-5.2-3.2-5.2-6.3V3.8z" }], ["path", { d: "M2.5 13.5l11-11" }]],
 	unknown: [["rect", { x: 3, y: 3, width: 10, height: 10, rx: 1, "stroke-dasharray": "2.2 2" }]],
 	ejected: [["rect", { x: 3, y: 3, width: 10, height: 10, rx: 1 }], ["path", { d: "M3.5 12.5l9-9" }]],
 	fault: [["path", { d: "M8 2l6.3 11.5H1.7z" }], ["path", { d: "M8 6.6v3.2M8 11.6v.1" }]],
@@ -38,6 +39,7 @@ const ICONS = {
 	why: [["circle", { cx: 8, cy: 8, r: 6 }], ["path", { d: "M6.2 6.3a1.8 1.8 0 1 1 2.5 1.7c-.5.2-.7.6-.7 1.1v.3M8 11.2v.1" }]],
 	code: [["path", { d: "M5.5 4.5L2 8l3.5 3.5M10.5 4.5L14 8l-3.5 3.5" }]],
 	arrow: [["path", { d: "M3 8h10M9 4l4 4-4 4" }]],
+	external: [["path", { d: "M6.5 3H3.5v9.5H13V9.5" }], ["path", { d: "M8.5 3H13v4.5" }], ["path", { d: "M13 3L7 9" }]],
 };
 function icon(name) {
 	const NS = "http://www.w3.org/2000/svg";
@@ -51,10 +53,10 @@ const iconBtn = (name, label, onclick, cls = "") => h("button", { type: "button"
 // mark, label, tone (tone defaults to the mark)
 const STATES = {
 	flagged: ["flagged", "Flagged"], matches: ["flagged", "Matches"],
-	pending: ["queued", "Pending"], pending_approval: ["queued", "Awaiting approval"], retry_pending: ["queued", "Retry pending"], approved: ["queued", "Approved"], executing: ["queued", "Executing"], retry_executing: ["queued", "Retrying"], running: ["queued", "Running"],
+	pending: ["queued", "Queued"], pending_approval: ["queued", "Queued"], retry_pending: ["queued", "Retry pending"], approved: ["queued", "Running soon"], executing: ["queued", "Executing"], retry_executing: ["queued", "Retrying"], running: ["queued", "Running"],
 	executed: ["ejected", "Executed"], removed: ["ejected", "Removed"], files_deleted: ["ejected", "Files deleted"], unmonitored: ["ejected", "Unmonitored"],
 	completed: ["loaded", "Completed", "ok"], success: ["loaded", "Success", "ok"], protected: ["protected", "Protected"],
-	rejected: ["loaded", "Rejected"], expired: ["loaded", "Expired"], skipped: ["loaded", "Skipped"], no_match: ["loaded", "No match"], out_of_scope: ["loaded", "Out of scope"],
+	expired: ["loaded", "Expired"], skipped: ["loaded", "Skipped"], no_match: ["loaded", "No match"], out_of_scope: ["loaded", "Out of scope"],
 	partial: ["unknown", "Partial"], unknown: ["unknown", "Unknown"],
 	blocked: ["fault", "Blocked"], failed: ["fault", "Failed"], error: ["fault", "Error"],
 };
@@ -62,8 +64,34 @@ function state(s, label) {
 	const [mark, text, tone] = STATES[s] || ["loaded", String(s).replaceAll("_", " ")];
 	return h("span", { class: `state ${tone || mark}` }, icon(mark), label ?? text);
 }
-const actionTag = (a) => h("span", { class: `tag ${a}` }, { delete: "Delete", unmonitor: "Unmonitor", delete_files: "Delete files", delete_season: "Delete season" }[a] || a);
+const ACTION_LABEL = { delete: "Delete", unmonitor: "Unmonitor", delete_files: "Delete files", delete_season: "Delete season" };
+const actionTag = (a) => h("span", { class: `tag ${a}` }, ACTION_LABEL[a] || a);
 const protectTag = () => h("span", { class: "tag protect" }, "Protect");
+
+/** A button that opens the item's Sonarr/Radarr page in a new tab. `d` needs instanceId, arrItemId, itemType. */
+function openInArrBtn(d, cls = "ghost small") {
+	const label = `Open in ${d.itemType === "movie" ? "Radarr" : "Sonarr"}`;
+	return iconBtn("external", label, (e) => guard(e.currentTarget, async () => {
+		const { url } = await api(`/link/${encodeURIComponent(d.instanceId)}/${d.arrItemId}`);
+		window.open(url, "_blank", "noopener");
+	}), cls);
+}
+/** Toggle that manually protects/unprotects the item; shows the action it will take. `d` needs instanceId, arrItemId, itemType, title, optional seasonNumber. */
+function protectBtn(d, cls = "ghost small", onChange) {
+	let id = null;
+	const set = () => {
+		btn.replaceChildren(icon(id ? "unprotected" : "protected"), id ? "Unprotect" : "Protect");
+		btn.title = `${id ? "Unprotect" : "Protect"} ${nameOf(d)}`; btn.setAttribute("aria-pressed", String(!!id));
+	};
+	const btn = h("button", { type: "button", class: cls, onclick: (e) => guard(e.currentTarget, async () => {
+		if (id) { await api(`/protected/${id}`, { method: "DELETE" }); id = null; }
+		else id = (await api("/protected", { method: "POST", body: { instanceId: d.instanceId, arrItemId: d.arrItemId, itemType: d.itemType, seasonNumber: d.seasonNumber ?? null, title: d.title } })).id;
+		set();
+		toast(`${id ? "Protected" : "Unprotected"} ${nameOf(d)}`);
+	}) });
+	set();
+	return btn;
+}
 
 // ── API ────────────────────────────────────────────────────────────────────
 const keyStore = { get: () => { try { return localStorage.getItem("cleanarr.key") || ""; } catch { return ""; } }, set: (v) => { try { localStorage.setItem("cleanarr.key", v); } catch {} } };
@@ -94,6 +122,8 @@ let toastTimer;
 function toast(msg, bad = false) { const t = $("#toast"); t.replaceChildren(icon(bad ? "fault" : "check"), msg); t.className = bad ? "show bad" : "show"; clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove("show"), 4000); }
 const fail = (e) => toast(e.message.split("\n")[0], true);
 async function guard(btn, fn) { btn.disabled = true; btn.classList.add("busy"); try { await fn(); } catch (e) { fail(e); } finally { btn.disabled = false; btn.classList.remove("busy"); } }
+/** Blocks all interaction (clicks, keys, navigation) while a manual reclaim runs. */
+async function locked(fn) { const els = [...document.querySelectorAll("header.rack-top, #view")]; els.forEach((e) => { e.inert = true; e.classList.add("locked"); }); try { return await fn(); } finally { els.forEach((e) => { e.inert = false; e.classList.remove("locked"); }); } }
 const notice = (...kids) => h("div", { class: "notice", role: "note" }, icon("unknown"), h("div", {}, ...kids));
 const badNotice = (...kids) => h("div", { class: "notice bad", role: "alert" }, icon("fault"), h("div", {}, ...kids));
 const empty = (title, text, ...actions) => h("div", { class: "empty" }, h("div", { class: "h" }, title), text ? h("p", {}, text) : null, actions.length ? h("div", { class: "row", style: "justify-content:center" }, ...actions) : null);
@@ -101,7 +131,7 @@ const empty = (title, text, ...actions) => h("div", { class: "empty" }, h("div",
 function openDialog({ kind = "", title, lede, body = [], foot = [], onClose }) {
 	dialog.className = kind;
 	const x = onClose ? iconBtn("x", "Close", onClose, "ghost dlg-close") : null;
-	dialog.replaceChildren(h("div", { class: "dlg-head" }, h("h2", {}, title), lede ? h("p", { class: "lede" }, lede) : null, x), h("div", { class: "dlg-body" }, ...body), foot.length ? h("div", { class: "dlg-foot" }, ...foot) : null);
+	dialog.replaceChildren(...[h("div", { class: "dlg-head" }, h("h2", {}, title), lede ? h("p", { class: "lede" }, lede) : null, x), body.length ? h("div", { class: "dlg-body" }, ...body) : null, foot.length ? h("div", { class: "dlg-foot" }, ...foot) : null].filter(Boolean));
 	if (!dialog.open) dialog.showModal();
 }
 const closeBtn = (label = "Close") => h("button", { type: "button", onclick: () => dialog.close() }, label);
@@ -137,11 +167,12 @@ const sum = (rows) => rows.filter(frees).reduce((n, r) => n + (r.sizeOnDisk || 0
 const uid = () => `f${Math.random().toString(36).slice(2, 9)}`;
 
 // ── Router ─────────────────────────────────────────────────────────────────
-const routes = { dashboard: renderDashboard, rules: renderRules, approvals: renderApprovals, history: renderHistory, instances: renderInstances, settings: renderSettings };
-const titles = { dashboard: "Dashboard", rules: "Rules", approvals: "Approvals", history: "History", instances: "Instances", settings: "Settings" };
+const routes = { dashboard: renderDashboard, rules: renderRules, history: renderHistory, instances: renderInstances, settings: renderSettings, missing: renderMissing, protected: renderProtected };
+const titles = { dashboard: "Dashboard", rules: "Rules", history: "History", instances: "Instances", settings: "Settings", missing: "Missing files", protected: "Protected" };
+const subPages = ["missing", "protected"]; // reached from the dashboard Library panel, not the nav
 let current = "dashboard", waiting = 0, routeSeq = 0;
 function paintNav() {
-	$("#nav").replaceChildren(...Object.entries(titles).map(([k, v]) => h("a", { href: `#/${k}`, class: k === current ? "active" : "", "aria-current": k === current ? "page" : null }, v, k === "approvals" && waiting ? h("span", { class: "count", "aria-label": `${waiting} waiting` }, waiting) : null)));
+	$("#nav").replaceChildren(...Object.entries(titles).filter(([k]) => !subPages.includes(k)).map(([k, v]) => h("a", { href: `#/${k}`, class: k === current || (k === "dashboard" && subPages.includes(current)) ? "active" : "", "aria-current": k === current ? "page" : null }, v, k === "dashboard" && waiting ? h("span", { class: "count", "aria-label": `${waiting} in queue` }, waiting) : null)));
 }
 async function route() {
 	const seq = ++routeSeq;
@@ -158,7 +189,7 @@ async function refreshMode() {
 	try {
 		const s = await api("/status");
 		const m = $("#mode");
-		const [cls, txt] = s.config.dryRun ? ["dry", "Dry run"] : s.config.requireApproval ? ["live", "Live · approval"] : ["auto", "Live · automatic"];
+		const [cls, txt] = s.config.dryRun ? ["dry", "Dry run"] : ["live", `Live · ${s.config.queueDelayDays}d queue`];
 		m.className = `mode ${cls}`; m.querySelector(".txt").textContent = txt;
 		const n = (s.approvals.pending || 0) + (s.approvals.retry_pending || 0);
 		if (n !== waiting) { waiting = n; paintNav(); }
@@ -167,16 +198,16 @@ async function refreshMode() {
 window.addEventListener("hashchange", route);
 
 // ── Dashboard ──────────────────────────────────────────────────────────────
+let repaintDashboard = null; // set while the dashboard is showing, so a reclaim can drop its poster without re-reading every service
 let lastPreview = null; // { at, data } so returning to the dashboard doesn't re-read every service
 async function renderDashboard() {
-	const [s, instances, pending, rules] = await Promise.all([api("/status"), api("/instances"), api("/approvals?status=pending"), api("/rules")]);
+	const [s, instances, rules] = await Promise.all([api("/status"), api("/instances"), api("/rules")]);
 	const libs = instances.filter((i) => i.type === "sonarr" || i.type === "radarr");
 	const cleanupRules = rules.filter((r) => r.enabled && r.mode === "cleanup");
 	const out = h("div");
 	const notices = h("div", { class: "notices" });
-	if (s.config.dryRun && libs.length) notices.append(notice("Dry run is on: runs only report what they would do, and nothing is queued for approval. ", h("a", { href: "#/settings" }, "Turn it off in Settings"), " once the preview looks right."));
+	if (s.config.dryRun && libs.length) notices.append(notice("Dry run is on: runs only report what they would do, and nothing is queued. ", h("a", { href: "#/settings" }, "Turn it off in Settings"), " once the preview looks right."));
 	const main = h("div");
-	const jump = s.config.requireApproval && pending.length ? h("a", { class: "jump", href: "#/approvals" }, h("span", { class: "lampdot" }), `${plural(pending.length, "item")} waiting for approval · ${bytes(sum(pending))}`, icon("arrow")) : null;
 	out.append(notices, main);
 
 	if (!libs.length) {
@@ -188,23 +219,21 @@ async function renderDashboard() {
 		main.append(readout(null, "No cleanup rules yet", "Write a rule and the preview shows exactly what it would pull, before anything changes."),
 			posterState("empty", "Nothing to pull yet", "Rules decide which titles go, e.g. added over a year ago and not watched in 180 days.", h("button", { type: "button", onclick: () => { location.hash = "#/rules"; editRule(); } }, icon("plus"), "Write a rule")),
 			lastRunPanel(s.lastRun));
-		const q = approvalsPanel(pending, s.config); if (q) main.append(q);
 		const lib = h("div", {}, libraryPanel(null)); main.prepend(lib);
-		api("/preview", { method: "POST" }).then((p) => lib.replaceChildren(libraryPanel(p.library))).catch(() => lib.replaceChildren());
+		api("/preview", { method: "POST" }).then((p) => lib.replaceChildren(libraryPanel(p.library, [], p.missing))).catch(() => lib.replaceChildren());
 		return out;
 	}
 
 	const head = h("div"), strip = h("div"), drivers = h("div"), warn = h("div"), lib = h("div", {}, libraryPanel(null));
 	main.append(lib, head, strip, warn, drivers, lastRunPanel(s.lastRun));
-	const queuePanel = approvalsPanel(pending, s.config); if (queuePanel) main.append(queuePanel);
 	const runBtn = h("button", { type: "button", class: "primary", onclick: (e) => guard(e.currentTarget, async () => {
-		const text = s.config.dryRun ? "This is a dry run: Cleanarr records what it would do and changes nothing." : s.config.requireApproval ? "Matches are queued for approval. Nothing is removed until you approve it." : "Automatic mode is on: matching items are removed immediately, without approval.";
-		if (!(await ask({ title: "Run cleanup now?", text, action: s.config.dryRun ? "Run dry run" : s.config.requireApproval ? "Run and queue" : "Run and remove", danger: !s.config.dryRun && !s.config.requireApproval }))) return;
-		const r = await api("/run", { method: "POST", body: {} });
+		const text = s.config.dryRun ? "This is a dry run: Cleanarr records what it would do and changes nothing." : "Matches are actioned immediately, skipping the queue wait. This can't be undone.";
+		if (!(await ask({ title: "Reclaim now?", text, action: s.config.dryRun ? "Run dry run" : "Reclaim now" }))) return;
+		const r = await api("/run", { method: "POST", body: { immediate: true } });
 		toast(`Run ${r.status}: ${r.itemsFlagged} flagged, ${r.itemsRemoved} removed`);
 		lastPreview = null; route();
-	}) }, icon("play"), "Run now");
-	const refreshBtn = h("button", { type: "button", onclick: (e) => guard(e.currentTarget, () => load(true)) }, icon("refresh"), "Refresh");
+	}) }, icon("play"), "Reclaim now");
+	const refreshBtn = h("button", { type: "button", onclick: (e) => guard(e.currentTarget, () => load(true)) }, icon("refresh"), "Run Rules");
 	const acts = h("div", { class: "acts" }, refreshBtn, runBtn);
 
 	async function load(force) {
@@ -216,17 +245,18 @@ async function renderDashboard() {
 	}
 	function paint(p) {
 		const flagged = p.candidates, reclaim = sum(flagged), ruleCount = new Set(flagged.map((c) => c.ruleId)).size;
+		const queuedCount = flagged.filter((c) => c.queue).length;
 		const nw = (t) => h("span", { class: "nw" }, t);
 		const facts = flagged.length
-			? [nw(`${plural(flagged.length, "title")} flagged by ${plural(ruleCount, "rule")}`), " · ", nw(`${plural(p.evaluated, "title")} evaluated`)]
+			? [nw(`${plural(flagged.length, "title")} flagged by ${plural(ruleCount, "rule")}`), " · ", nw(`${plural(p.evaluated, "title")} evaluated`), queuedCount ? [" · ", nw(`${plural(queuedCount, "title")} already queued`)] : null]
 			: `${plural(p.evaluated, "title")} evaluated. Your rules match nothing right now.`;
-		head.replaceChildren(readout(reclaim, "reclaimable by your rules", facts, acts, jump));
-		const skippedLink = h("a", { href: "#", onclick: (e) => { e.preventDefault(); openDialog({ kind: "wide skips", title: plural(p.skipped.length, "skipped title"), lede: "Each of these already matches a cleanup rule — something else is holding it back.", body: [skippedList(p.skipped)], foot: [closeBtn()] }); } }, "See why");
-		warn.replaceChildren(...(p.warnings.length || p.skipped.length ? [h("div", { class: "notices", style: "margin-top:16px" }, ...p.warnings.map((w) => notice(w)), p.skipped.length ? notice(`${plural(p.skipped.length, "title")} skipped. `, skippedLink) : null)] : []));
-		strip.replaceChildren(flagged.length ? posterGrid(flagged) : posterState("empty", "Shelf is clear", "No title matches a cleanup rule. Loosen a rule or check back after more is added.", h("a", { class: "btn", href: "#/rules" }, "Review rules")));
+		head.replaceChildren(readout(reclaim, "reclaimable by your rules", facts, acts));
+		warn.replaceChildren(...(p.warnings.length ? [h("div", { class: "notices", style: "margin-top:16px" }, ...p.warnings.map((w) => notice(w)))] : []));
+		strip.replaceChildren(flagged.length ? posterGrid(flagged, s.config) : posterState("empty clear", "Shelf is clear", `No title matches a cleanup rule.${waiting ? ` ${plural(waiting, "queued removal")} no longer match${waiting === 1 ? "es" : ""} and will be re-checked before running.` : " Loosen a rule or check back after more is added."}`, h("a", { class: "btn", href: "#/rules" }, "Review rules")));
 		drivers.replaceChildren(flagged.length ? driversPanel(flagged) : "");
-		lib.replaceChildren(libraryPanel(p.library));
+		lib.replaceChildren(libraryPanel(p.library, p.skipped.filter((d) => skipCategory(d)[0] === "protected"), p.missing));
 	}
+	repaintDashboard = () => paint(lastPreview.data);
 	load(false).catch((e) => { lib.replaceChildren(); head.replaceChildren(readout(null, "Preview failed", e.message, acts)); strip.replaceChildren(posterState("empty", "Couldn't read the library", "Check that your instances are reachable, then refresh.", h("a", { class: "btn", href: "#/instances" }, "Check instances"))); });
 	return out;
 }
@@ -253,48 +283,109 @@ function dashboardSkeleton() {
 }
 function posterState(kind, title, text, action) {
 	return h("div", { class: `posters state ${kind}` },
-		h("div", { class: "grid", "aria-hidden": "true" }, Array.from({ length: 12 }, () => h("div", { class: "ph" }))),
-		title ? h("div", { class: "over" }, h("div", {}, h("div", { class: "h" }, title), h("p", {}, text), action || null)) : null);
+		h("div", { class: "grid", "aria-hidden": "true" }, Array.from({ length: 12 }, (_, i) => h("div", { class: "ph", style: `--i:${i}` }))),
+		title ? h("div", { class: "over" }, h("div", {}, kind.includes("clear") ? h("span", { class: "seal" }, icon("check")) : null, h("div", { class: "h" }, title), h("p", {}, text), action || null)) : null);
 }
 // Stable 6-character barcode label per title, like an LTO cartridge's volser.
 function volser(d) { let x = 2166136261; for (const ch of `${d.instanceId}:${d.itemType}:${d.arrItemId}${d.seasonNumber != null ? `:${d.seasonNumber}` : ""}`) x = Math.imul(x ^ ch.charCodeAt(0), 16777619); return (x >>> 0).toString(36).toUpperCase().padStart(6, "0").slice(-6); }
 const vol = (d) => h("span", { class: "vol", title: "Cartridge label" }, volser(d));
 const PAGE_POSTERS = 48;
-function posterGrid(flagged) {
-	const sorted = [...flagged].sort((a, b) => b.sizeOnDisk - a.sizeOnDisk);
-	const grid = h("div", { class: "grid", role: "list", "aria-label": "Flagged titles, largest first" });
+const daysUntil = (ms) => Math.max(0, Math.ceil((ms - Date.now()) / 86_400_000));
+/** Not yet queued (no open approval): when it would be, from the next scheduled run plus the queue wait. Null while dry-run or disabled, since neither ever queues anything. */
+function etaMs(cfg) {
+	return cfg && !cfg.dryRun && cfg.nextRunAt ? new Date(cfg.nextRunAt).getTime() + cfg.queueDelayDays * 86_400_000 : null;
+}
+function etaText(cfg) {
+	const ms = etaMs(cfg);
+	return ms == null ? null : `Removes in ~${daysUntil(ms)} d`;
+}
+/** Compact "Xd" / "Due" / "Retry" for the poster's corner badge. */
+function countdownBadge(c, cfg) {
+	const q = c.queue;
+	if (q) {
+		if (q.status === "retry_pending") return "Retry";
+		const d = daysUntil(new Date(q.executeAfter).getTime());
+		return d === 0 ? "Due" : `${d}d`;
+	}
+	const ms = etaMs(cfg);
+	return ms == null ? null : `~${daysUntil(ms)}d`;
+}
+/** Reclaim time to sort by: the queue's own due time, or (not yet queued) the estimate, else last. */
+function soonestMs(c, cfg) {
+	if (c.queue) return new Date(c.queue.executeAfter).getTime();
+	return etaMs(cfg) ?? Infinity;
+}
+function posterGrid(flagged, cfg) {
+	const sorted = [...flagged].sort((a, b) => soonestMs(a, cfg) - soonestMs(b, cfg) || b.sizeOnDisk - a.sizeOnDisk);
+	const grid = h("div", { class: "grid", role: "list", "aria-label": "Flagged titles, soonest then largest" });
 	const more = h("button", { type: "button", class: "more", onclick: () => paint(sorted.length) });
 	const paint = (n) => {
-		grid.replaceChildren(...sorted.slice(0, n).map(posterCard));
+		grid.replaceChildren(...sorted.slice(0, n).map((c) => posterCard(c, cfg)));
 		more.hidden = n >= sorted.length;
 		more.textContent = `Show all ${sorted.length}`;
 	};
 	paint(PAGE_POSTERS);
 	const total = sum(flagged);
 	return h("div", { class: "posters" },
-		h("div", { class: "scale" }, h("span", {}, `${plural(flagged.length, "title")} · largest first`), h("span", {}, `${bytes(total)} frees space`)),
+		h("div", { class: "scale" }, h("span", {}, `${plural(flagged.length, "title")} · soonest then largest`), h("span", {}, `${bytes(total)} frees space`)),
 		grid, more);
 }
-function posterCard(c) {
+function posterCard(c, cfg) {
 	const art = c.poster
 		? h("img", { src: c.poster, alt: "", loading: "lazy", decoding: "async", onerror: (e) => e.target.replaceWith(h("span", { class: "noart" }, c.title)) })
 		: h("span", { class: "noart" }, c.title);
-	return h("div", { role: "listitem" }, h("button", { type: "button", class: `poster ${frees(c) ? "" : "keep"}`, "aria-label": `${nameOf(c)}, ${bytes(c.sizeOnDisk)}, ${c.ruleName}`, onclick: () => openDialog({ kind: "wide", title: nameOf(c), body: [titleDetail(c)], foot: [closeBtn()], onClose: () => dialog.close() }) },
-		h("span", { class: "art" }, art, c.seasonNumber != null ? h("span", { class: "badge" }, `S${c.seasonNumber}`) : null, h("span", { class: "size" }, bytes(c.sizeOnDisk))),
+	return h("div", { role: "listitem", "data-key": volser(c) }, h("button", { type: "button", class: `poster ${frees(c) ? "" : "keep"}`, "aria-label": `${nameOf(c)}, ${bytes(c.sizeOnDisk)}, ${c.ruleName}`, onclick: () => {
+			let changed = false;
+			// A protected item no longer matches a cleanup rule: refresh the dashboard once the dialog closes.
+			dialog.addEventListener("close", () => { if (changed) { lastPreview = null; route(); } }, { once: true });
+			openDialog({ kind: "wide", title: nameOf(c), body: [titleDetail(c, () => { changed = true; }, cfg)], foot: [closeBtn()], onClose: () => dialog.close() });
+		} },
+		h("span", { class: "art" }, art, c.seasonNumber != null ? h("span", { class: "badge" }, `S${c.seasonNumber}`) : null, h("span", { class: "size" }, bytes(c.sizeOnDisk)),
+			countdownBadge(c, cfg) ? h("span", { class: "countdown" }, countdownBadge(c, cfg)) : null),
 		h("span", { class: "cap" }, h("span", { class: "t" }, c.title), h("span", { class: "m" }, c.ruleName))));
 }
-function titleDetail(c) {
+/** Queue status line for the detail view: when it's due, that a retry is pending and why it failed, or (not yet queued) an estimate of when it would be. */
+function queueStatus(c, cfg) {
+	const q = c.queue;
+	if (!q) { const eta = etaText(cfg); return eta ? h("div", { class: "queue-status" }, state("pending", eta)) : null; }
+	const badge = q.status === "retry_pending" ? state("retry_pending", "Retry pending") : state("pending", `Queued · removes ${ago(q.executeAfter)}`);
+	return h("div", { class: "queue-status" }, badge, q.lastError ? h("div", { class: "help" }, q.lastError) : null);
+}
+/** Reclaim this one title now. Queued items go through their approval; unqueued ones through a single-title run. */
+function queueActs(c) {
+	const q = c.queue;
+	if (q && q.status !== "pending" && q.status !== "retry_pending") return null;
+	const label = ACTION_LABEL[c.action] || "Run";
+	return [h("button", { type: "button", class: "small danger", onclick: (e) => guard(e.currentTarget, async () => {
+		const title = c.action === "delete_files" ? `Delete files for “${nameOf(c)}” now?` : `${label} “${nameOf(c)}” now?`;
+		if (!(await ask({ title, text: "Re-checked against live data first, and blocked if anything changed.", action: `${label} now`, danger: true }))) return;
+		const card = document.querySelector(`[data-key="${volser(c)}"]`);
+		dialog.close();
+		card?.classList.add("deleting");
+		try {
+			const r = q ? await api(`/approvals/${q.id}/approve`, { method: "POST" })
+				: await api("/run", { method: "POST", body: { immediate: true, only: { instanceId: c.instanceId, arrItemId: c.arrItemId, seasonNumber: c.seasonNumber ?? null } } });
+			const done = q ? r.status === "executed" : r.itemsRemoved + r.itemsUnmonitored + r.itemsFilesDeleted > 0;
+			if (done && lastPreview && repaintDashboard) {
+				lastPreview.data.candidates = lastPreview.data.candidates.filter((x) => x !== c);
+				toast("Reclaimed"); repaintDashboard();
+			} else { toast(q ? `Not reclaimed: ${r.lastError || r.status}` : "Nothing was reclaimed"); lastPreview = null; route(); }
+		} catch (e) { card?.classList.remove("deleting"); throw e; }
+	}) }, icon("trash"), "Reclaim now")];
+}
+function titleDetail(c, onProtect, cfg) {
 	const why = h("div", { class: "x", hidden: true });
 	const [n, u] = bytesParts(c.sizeOnDisk);
 	const art = c.poster ? h("img", { src: c.poster, alt: "", class: "thumb", onerror: (e) => e.target.replaceWith(h("div", { class: "thumb noart" }, c.title)) }) : h("div", { class: "thumb noart" }, c.title);
 	return h("div", { class: "detail" }, art,
 		h("div", { class: "main" },
 			h("div", { class: "fig" }, h("span", { class: "n" }, n), h("span", { class: "u" }, u), actionTag(c.action)),
+			queueStatus(c, cfg),
 			impactBlock(c),
 			h("dl", { class: "basis" },
 				h("dt", {}, "Rated"), h("dd", {}, c.certification ? h("span", { class: "cert" }, c.certification) : h("span", { class: "faint" }, "Not rated")),
 				h("dt", {}, "Rule"), h("dd", {}, c.ruleName), h("dt", {}, "Matched"), h("dd", {}, plainReason(c.reason))),
-			h("div", { class: "acts" }, whyButton(c, why))),
+			h("div", { class: "acts" }, whyButton(c, why), openInArrBtn(c, "small"), protectBtn(c, "small", onProtect), queueActs(c))),
 		why);
 }
 // Evaluation reasons for AND/OR rules arrive wrapped in one pair of brackets; drop it for reading.
@@ -343,38 +434,140 @@ function driversPanel(flagged) {
 			h("div", { class: "v" }, bytes(r.b), h("small", {}, plural(r.n, "title"))))))));
 }
 /** Library totals; `null` renders the same panel with placeholder values while the preview loads. */
-function libraryPanel(l) {
-	const stat = (label, value, sub) => h("div", {}, h("div", { class: "k" }, label), l ? h("div", { class: "n" }, value) : sk("val"), l ? h("small", {}, sub) : sk("line short"));
+function libraryPanel(l, prot = [], missing = []) {
+	const stat = (label, value, sub, more) => h("div", {}, h("div", { class: "k" }, label), l ? h("div", { class: "n" }, value) : sk("val"), more && l ? h("div", { class: "subrow" }, h("small", {}, sub), more) : l ? h("small", {}, sub) : sk("line short"));
+	const details = h("a", { class: "link", href: "#/protected" }, "View details");
+	const missingDetails = h("a", { class: "link", href: "#/missing" }, "View details");
 	return h("section", { style: "margin-bottom:28px", "aria-busy": l ? null : "true" }, h("div", { class: "section-title" }, h("h2", { class: "grow" }, "Library")),
 		h("div", { class: "panel stats" },
-			stat("Total size", l && bytes(l.totalBytes), l && plural(l.movies + l.series, "title")),
+			stat("Total size", l && [bytes(l.totalBytes), l.capacityBytes ? h("small", { class: "cap" }, `/${bytes(l.capacityBytes)}`) : null], l && plural(l.movies + l.series, "title")),
 			stat("Movies", l?.movies.toLocaleString(), l && bytes(l.movieBytes)),
 			stat("Series", l?.series.toLocaleString(), l && `${plural(l.files, "episode")} · ${bytes(l.seriesBytes)}`),
-			stat("Missing files", l?.missing.toLocaleString(), "no file on disk")));
+			stat("Missing files", l?.missing.toLocaleString(), "no file on disk", missing.length ? missingDetails : null),
+			stat("Protected", prot.length.toLocaleString(), bytes(prot.reduce((n, d) => n + (d.sizeOnDisk || 0), 0)), prot.length ? details : null)));
+}
+/** Protected-titles page: rule-protected matches, or a toggle to the manual list with bulk unprotect. */
+async function renderProtected() {
+	const prot = (await getPreview()).skipped.filter((d) => skipCategory(d)[0] === "protected"), mode = "all";
+	const body = h("div", {});
+	const key = (d) => `${d.instanceId}:${d.arrItemId}:${d.itemType}:${d.seasonNumber ?? ""}`;
+	const info = new Map(prot.map((d) => [key(d), d]));
+	const manualList = (items, toggle) => {
+		const boxes = items.map((p) => h("input", { type: "checkbox", "aria-label": `Select ${nameOf(p)}` }));
+		const all = h("input", { type: "checkbox", "aria-label": "Select all", onchange: () => boxes.forEach((b) => { b.checked = all.checked; }) });
+		const bulk = h("button", { type: "button", class: "danger solid", onclick: (e) => guard(e.currentTarget, async () => {
+			const sel = items.filter((p, i) => boxes[i].checked && !p.ignoreRetention);
+			if (!sel.length) return toast("Select protected items first", true);
+			if (!(await ask({ title: `Unprotect ${plural(sel.length, "item")}?`, text: "Cleanup rules can match them again on the next run.", action: "Unprotect", danger: true }))) return show(seg.value());
+			await Promise.all(sel.map((p) => api(`/protected/${p.id}`, { method: "DELETE" })));
+			toast(`Unprotected ${plural(sel.length, "item")}`);
+			show(seg.value());
+		}) }, "Unprotect selected");
+		const cards = items.map((p, i) => {
+			const d = { ...info.get(key(p)), ...p };
+			const art = d.poster
+				? h("img", { src: d.poster, alt: "", class: "art", loading: "lazy", decoding: "async", onerror: (e) => e.target.replaceWith(h("span", { class: "art noart" }, d.title)) })
+				: h("span", { class: "art noart" }, d.title);
+			boxes[i].classList.add("pick");
+			return h("div", { class: "skip-card pickable" }, art, boxes[i],
+				h("div", { class: "body" },
+					h("div", { class: "head" }, h("div", { class: "t", title: nameOf(d) }, nameOf(d), h("small", {}, kindLabel(d.itemType), d.certification ? [" · ", h("span", { class: "cert" }, d.certification)] : null)), d.sizeOnDisk ? h("span", { class: "sz" }, bytes(d.sizeOnDisk)) : null),
+					keptBy(p.ignoreRetention ? "Retention rules ignored" : "Manually protected"),
+					h("div", { class: "foot" },
+						h("div", { class: "foot-left" }, protectToggle(toggle(p), nameOf(d), !p.ignoreRetention)))));
+		});
+		return h("div", {}, h("div", { class: "row", style: "margin:16px 0 12px" }, h("label", { class: "row" }, all, "Select all"), h("span", { class: "grow" }), bulk), h("div", { class: "skip-grid" }, cards));
+	};
+	const show = async (mode) => {
+		body.replaceChildren(empty("Loading…"));
+		let items;
+		try { items = await api("/protected"); } catch (e) { body.replaceChildren(); return fail(e); }
+		const ids = new Map(items.filter((p) => !p.ignoreRetention).map((p) => [key(p), p.id]));
+		// Manual protection is deleted/recreated; retention-rule protection is overridden/restored per item.
+		const toggle = (d) => {
+			const k = key(d), manual = ids.has(k);
+			const post = (extra) => api("/protected", { method: "POST", body: { instanceId: d.instanceId, arrItemId: d.arrItemId, itemType: d.itemType, seasonNumber: d.seasonNumber ?? null, title: d.title, ...extra } });
+			const del = () => api(`/protected/${ids.get(k)}`, { method: "DELETE" });
+			return manual
+				? { off: del, on: async () => ids.set(k, (await post({})).id) }
+				: { off: async () => ids.set(k, (await post({ ignoreRetention: true })).id), on: del };
+		};
+		const manualToggle = (p) => {
+			const del = () => api(`/protected/${p.id}`, { method: "DELETE" });
+			const post = async () => { p.id = (await api("/protected", { method: "POST", body: { instanceId: p.instanceId, arrItemId: p.arrItemId, itemType: p.itemType, seasonNumber: p.seasonNumber ?? null, title: p.title, ignoreRetention: p.ignoreRetention } })).id; };
+			return p.ignoreRetention ? { off: post, on: del } : { off: del, on: post };
+		};
+		if (mode === "rule") { body.replaceChildren(skippedList(prot, toggle)); return; }
+		// "All": rule-protected cards, plus manual items not already shown there
+		const seen = new Set(prot.map(key));
+		if (mode === "all") items = items.filter((p) => !seen.has(key(p)));
+		if (mode === "manual" && !items.length) { body.replaceChildren(empty("Nothing manually protected")); return; }
+		body.replaceChildren(...(mode === "all" ? [skippedList(prot, toggle)] : []), ...(items.length ? [manualList(items, manualToggle)] : []));
+	};
+	const seg = segmented("List", [["all", "All"], ["rule", "By rules"], ["manual", "Manually protected"]], mode);
+	seg.addEventListener("change", () => show(seg.value()));
+	show(mode);
+	return h("div", {}, backHead("Protected", "Titles matching a cleanup rule but kept by a retention rule, or items you protected by hand."), h("div", { style: "margin-bottom:16px" }, seg), body);
+}
+/** Preview shared with the dashboard, so the sub-pages open without re-reading every service. */
+async function getPreview() {
+	if (!lastPreview || Date.now() - lastPreview.at > 5 * 60_000) lastPreview = { at: Date.now(), data: await api("/preview", { method: "POST" }) };
+	return lastPreview.data;
+}
+const backHead = (title, lede) => h("div", { class: "page-head" }, h("div", {}, h("a", { href: "#/dashboard", class: "small back" }, "← Dashboard"), h("h1", {}, title), h("p", { class: "lede" }, lede)));
+async function renderMissing() {
+	const { missing } = await getPreview();
+	return h("div", {}, backHead(plural(missing.length, "title") + " with no file", "Nothing on disk for these, yet. Open them in Sonarr/Radarr, or protect them to keep them out of cleanup."), missing.length ? missingList(missing) : empty("No missing files"));
+}
+/** "Missing files" list: titles with nothing on disk yet. */
+function missingList(rows) {
+	const sorted = [...rows].sort((a, b) => a.title.localeCompare(b.title));
+	return h("div", { class: "skip-grid" }, sorted.map((d) => {
+		const art = d.poster
+			? h("img", { src: d.poster, alt: "", class: "art", loading: "lazy", decoding: "async", onerror: (e) => e.target.replaceWith(h("span", { class: "art noart" }, d.title)) })
+			: h("span", { class: "art noart" }, d.title);
+		return h("div", { class: "skip-card" }, art,
+			h("div", { class: "body" },
+				h("div", { class: "t", title: nameOf(d) }, nameOf(d), d.year ? ` (${d.year})` : "", h("small", {}, kindLabel(d.itemType), d.certification ? [" · ", h("span", { class: "cert" }, d.certification)] : null)),
+				h("div", { class: "why" }, d.monitored ? "Monitored" : "Not monitored", d.added ? [" · added ", timeEl(d.added)] : null),
+				h("div", { class: "foot" }, h("div", { class: "foot-left" }, h("span", { class: "row-acts" }, openInArrBtn(d), protectBtn(d))), null)));
+	}));
 }
 function lastRunPanel(r) {
 	if (!r) return h("section", { style: "margin-top:28px" }, h("div", { class: "panel lastrun" }, state("loaded", "No runs yet"), h("span", {}, "Run now, or turn on the schedule in ", h("a", { href: "#/settings" }, "Settings"), ".")));
 	return h("section", { style: "margin-top:28px" }, h("div", { class: "section-title" }, h("h2", { class: "grow" }, "Last run"), h("a", { href: "#/history", class: "small" }, "All runs")),
 		h("div", { class: "panel" }, h("div", { class: "lastrun" }, state(r.status), h("span", { class: "tag" }, r.isDryRun ? "Dry run" : "Live"), timeEl(r.startedAt), h("span", {}, `${r.itemsEvaluated} evaluated · ${r.itemsFlagged} flagged · ${r.itemsRemoved} removed · ${r.itemsSkipped} skipped`), r.warnings.length ? h("a", { href: "#/history" }, plural(r.warnings.length, "warning")) : null)));
 }
-/** Approval queue summary; only relevant while approval is required. `null` when it has nothing to say. */
-function approvalsPanel(pending, config) {
-	if (!config.requireApproval) return null;
-	const n = pending.length;
-	return h("section", { style: "margin-top:28px" }, h("div", { class: "section-title" }, h("h2", { class: "grow" }, "Approval queue"), n ? h("a", { href: "#/approvals", class: "small" }, "Review") : null),
-		h("div", { class: "panel lastrun" }, n ? h("span", { class: "count" }, n) : state("loaded", "Clear"), h("span", {}, n ? `${plural(n, "title")} waiting · ${bytes(sum(pending))} reclaimable` : "Nothing waiting for approval")));
-}
-
-// A cleanup match is held back for exactly one of three reasons; the mark vocabulary already has a face for each.
-const SKIP_ORDER = ["protected", "pending_approval", "rejected", "skipped"];
+// A cleanup match is held back for exactly one of two reasons; the mark vocabulary already has a face for each.
+const SKIP_ORDER = ["protected", "skipped"];
 function skipCategory(d) {
 	const m = d.message || "";
-	if (m.startsWith("Protected by retention rule") || m.startsWith("Retention rule")) return ["protected", "Protected"];
-	if (m === "Already has an open approval") return ["pending_approval", "Already queued"];
-	if (m.startsWith("Previously rejected")) return ["rejected", "Recently rejected"];
+	if (m.startsWith("Protected by retention rule") || m.startsWith("Retention rule") || m === "Manually protected" || m.startsWith("Series is ")) return ["protected", "Protected"];
 	return ["skipped", "Skipped"];
 }
-function skippedList(rows) {
+/** Button that flips between Unprotect and Protect; dims its card while the item is unprotected. */
+function protectToggle(t, name, start = true) {
+	let on = start;
+	const set = () => {
+		btn.replaceChildren(icon(on ? "unprotected" : "protected"), on ? "Unprotect" : "Protect");
+		btn.title = `${on ? "Unprotect" : "Protect"} ${name}`; btn.setAttribute("aria-pressed", String(on));
+		btn.closest(".skip-card")?.style.setProperty("opacity", on ? "" : "0.55");
+	};
+	const btn = h("button", { type: "button", class: "ghost small", onclick: () => guard(btn, async () => {
+		await (on ? t.off() : t.on());
+		on = !on; set();
+		toast(`${on ? "Protected" : "Unprotected"} ${name}`);
+	}) });
+	set();
+	if (!start) queueMicrotask(set);
+	return btn;
+}
+/** The reason a title is safe, as a labelled block: retention rule name first, its matching condition under it. */
+function keptBy(m) {
+	const x = /^(?:Protected by )?retention rule "(.+?)"(?::\s*(.*))?$/i.exec(m);
+	return h("div", { class: "kept" }, x ? [h("span", { class: "k" }, "Kept by"), h("strong", {}, x[1]), x[2] ? h("span", { class: "c" }, x[2]) : null] : h("strong", {}, m));
+}
+function skippedList(rows, toggle) {
 	const sorted = [...rows].sort((a, b) => SKIP_ORDER.indexOf(skipCategory(a)[0]) - SKIP_ORDER.indexOf(skipCategory(b)[0]) || b.sizeOnDisk - a.sizeOnDisk);
 	return h("div", { class: "skip-grid" }, sorted.map((d) => {
 		const [cat, label] = skipCategory(d);
@@ -384,9 +577,11 @@ function skippedList(rows) {
 			: h("span", { class: "art noart" }, d.title);
 		return h("div", { class: "skip-card" }, art,
 			h("div", { class: "body" },
-				h("div", { class: "t" }, nameOf(d), h("small", {}, kindLabel(d.itemType), d.certification ? [" · ", h("span", { class: "cert" }, d.certification)] : null)),
-				h("div", { class: "why" }, actionTag(d.action), ` ${d.ruleName}: ${d.reason}`),
-				h("div", { class: "foot" }, cat === "pending_approval" ? h("a", { href: "#/approvals", onclick: () => dialog.close() }, badge) : badge, h("span", { class: "sz" }, bytes(d.sizeOnDisk)))));
+				h("div", { class: "head" }, h("div", { class: "t", title: nameOf(d) }, nameOf(d), h("small", {}, kindLabel(d.itemType), d.certification ? [" · ", h("span", { class: "cert" }, d.certification)] : null)), h("span", { class: "sz" }, bytes(d.sizeOnDisk))),
+				cat === "protected" ? keptBy(d.message) : null,
+				h("div", { class: cat === "protected" ? "why would" : "why", title: `${d.ruleName}: ${d.reason}` }, cat === "protected" ? "Otherwise " : null, actionTag(d.action), ` ${d.ruleName}`, cat === "protected" ? null : `: ${d.reason}`),
+				h("div", { class: "foot" },
+					h("div", { class: "foot-left" }, cat !== "protected" ? badge : null, cat !== "protected" ? h("span", { class: "row-acts" }, openInArrBtn(d), protectBtn(d)) : toggle ? protectToggle(toggle(d), nameOf(d)) : null))));
 	}));
 }
 
@@ -669,60 +864,6 @@ async function editRule(rule, tpl) {
 	name.focus();
 }
 
-// ── Approvals ──────────────────────────────────────────────────────────────
-const APPROVAL_TABS = [["pending", "Pending"], ["retry_pending", "Retry pending"], ["executed", "Executed"], ["blocked", "Blocked"], ["rejected", "Rejected"], ["expired", "Expired"]];
-async function renderApprovals() {
-	const status = new URLSearchParams(location.hash.split("?")[1] || "").get("status") || "pending";
-	const [rows, s] = await Promise.all([api(`/approvals?status=${encodeURIComponent(status)}`), api("/status")]);
-	const actionable = status === "pending" || status === "retry_pending";
-	const out = h("div", {}, h("div", { class: "page-head" }, h("div", {}, h("h1", {}, "Approvals"), h("p", { class: "lede" }, "Nothing is removed until you approve it, and each item is re-checked against live data right before removal."))));
-	out.append(h("nav", { class: "tabs", "aria-label": "Approval status" }, APPROVAL_TABS.map(([k, l]) => h("a", { href: `#/approvals?status=${k}`, class: k === status ? "active" : "", "aria-current": k === status ? "page" : null }, l, s.approvals[k] ? h("span", { class: k === "pending" || k === "retry_pending" ? "count" : "faint" }, s.approvals[k]) : null))));
-	if (!rows.length) {
-		const label = APPROVAL_TABS.find(([k]) => k === status)?.[1].toLowerCase() || status;
-		const msg = status === "pending" ? (s.config.dryRun ? ["Nothing waiting", "Dry run is on, so runs don't queue anything. Turn it off in Settings once the preview looks right."] : ["Nothing waiting", "New matches land here after the next run."]) : [`No ${label} approvals`, null];
-		return out.appendChild(h("div", { class: "panel" }, empty(...msg))), out;
-	}
-	const picked = new Set(), lis = [];
-	const bar = h("div", { class: "bulkbar", hidden: true, role: "region", "aria-label": "Selection" });
-	const act = (action, ids) => async (e) => {
-		const btn = e.currentTarget, chosenIds = ids || [...picked];
-		const chosen = rows.filter((a) => chosenIds.includes(a.id));
-		if (action === "approve" && !(await ask({ title: chosen.length === 1 ? `Remove “${nameOf(chosen[0])}” now?` : `Remove ${chosen.length} items now?`, text: `${bytes(sum(chosen))} will be reclaimed. Each item is re-checked against live data first and blocked if anything changed.`, action: chosen.length === 1 ? "Approve and remove" : `Approve ${chosen.length}`, danger: true }))) return;
-		await guard(btn, async () => {
-			const r = await api("/approvals/bulk", { method: "POST", body: { ids: chosenIds, action } });
-			const bad = r.results.filter((x) => !x.ok);
-			toast(bad.length ? `${bad.length} failed: ${bad[0].error}` : `${action === "approve" ? "Approved" : "Rejected"} ${plural(chosenIds.length, "item")}`, bad.length > 0);
-			lis.filter(({ a }) => chosenIds.includes(a.id)).forEach(({ li }) => li.classList.add("leaving"));
-			lastPreview = null; setTimeout(route, 200);
-		});
-	};
-	const all = actionable ? h("input", { type: "checkbox", "aria-label": "Select all", onchange: (e) => { for (const { a, box } of lis) { box.checked = e.target.checked; e.target.checked ? picked.add(a.id) : picked.delete(a.id); } paintBar(); } }) : null;
-	function paintBar() {
-		lis.forEach(({ li, a }) => li.classList.toggle("sel", picked.has(a.id)));
-		if (all) { all.checked = picked.size === rows.length; all.indeterminate = picked.size > 0 && picked.size < rows.length; }
-		bar.hidden = !picked.size;
-		bar.replaceChildren(h("span", { class: "sum" }, `${picked.size} selected · ${bytes(sum(rows.filter((a) => picked.has(a.id))))}`), h("button", { type: "button", onclick: act("reject") }, icon("x"), "Reject"), h("button", { type: "button", class: "go", onclick: act("approve") }, icon("check"), "Approve"));
-	}
-	const list = h("ul", { class: "approvals" }, h("li", { class: "head" }, h("span", {}, all ? h("label", { class: "hit" }, all) : null), h("span", { class: "t" }, "Title"), h("span", { class: "why" }, "Rule and reason"), h("span", { class: "sz" }, "Size"), h("span", { class: "st" }, "Status"), h("span", { class: "a" })));
-	for (const a of rows) {
-		const box = actionable ? h("input", { type: "checkbox", "aria-label": `Select ${nameOf(a)}`, onchange: (e) => { e.target.checked ? picked.add(a.id) : picked.delete(a.id); paintBar(); } }) : null;
-		const x = h("div", { class: "x", hidden: true });
-		const meta = a.lastError || (actionable ? `Expires ${ago(a.expiresAt)}` : a.executedAt || a.reviewedAt ? ago(a.executedAt || a.reviewedAt) : null);
-		const li = h("li", {},
-			h("span", {}, box ? h("label", { class: "hit" }, box) : null),
-			h("div", { class: "t" }, nameOf(a), a.year ? ` (${a.year})` : "", h("small", {}, vol(a), " · ", kindLabel(a.itemType), " · ", actionTag(a.action), h("span", { class: "sz-inline" }, ` · ${bytes(a.sizeOnDisk)}`)), h("small", { class: "why-inline" }, `${a.ruleName}: ${a.reason}`)),
-			h("div", { class: "why" }, h("b", {}, a.ruleName), h("small", {}, a.reason)),
-			h("div", { class: "sz" }, bytes(a.sizeOnDisk)),
-			h("div", { class: "st" }, state(a.status), meta ? h("div", { class: "help", style: "margin-top:4px" }, meta) : null),
-			h("div", { class: "a" }, whyButton(a, x, x, "icon ghost", true), actionable ? [iconBtn("x", `Reject ${nameOf(a)}`, act("reject", [a.id])), iconBtn("check", `Approve ${nameOf(a)}`, act("approve", [a.id]), "danger")] : null));
-		li.append(x);
-		lis.push({ li, a, box });
-		list.append(li);
-	}
-	out.append(h("div", { class: "panel" }, list), bar);
-	return out;
-}
-
 // ── History ────────────────────────────────────────────────────────────────
 async function renderHistory() {
 	const [runs, audit] = await Promise.all([api("/logs?limit=30"), api("/audit?limit=100")]);
@@ -800,25 +941,22 @@ function editInstance(inst, preset) {
 async function renderSettings() {
 	const c = await api("/config");
 	const num = (v, min = 1) => h("input", { id: uid(), type: "number", min, inputMode: "numeric", value: v ?? "" });
-	const interval = num(c.intervalHours), max = num(c.maxRemovalsPerRun), expiry = num(c.approvalExpiryDays);
-	const rej = h("select", { id: uid() }, [["0", "Off: rejected items can be proposed again next run"], ["30", "30 days"], ["90", "90 days"], ["365", "1 year"], ["forever", "Forever"]].map(([v, l]) => h("option", { value: v, selected: v === (c.rejectionMemoryDays === null ? "forever" : String(c.rejectionMemoryDays)) }, l)));
+	const every = num(c.intervalEvery), unit = h("select", { id: uid() }, ...["days", "weeks", "months"].map((u) => h("option", { value: u, selected: u === c.intervalUnit }, u))), time = h("input", { id: uid(), type: "time", value: c.runTime }), max = num(c.maxRemovalsPerRun), delay = num(c.queueDelayDays, 0);
 	const sw = (checked, label, help) => { const i = h("input", { type: "checkbox", checked }); return [i, h("label", { class: "switch" }, i, h("div", {}, h("div", { class: "t" }, label), h("div", { class: "d" }, help)))]; };
-	const [dry, dryF] = sw(c.dryRun, "Dry run", "Report what would be removed without changing anything or queueing approvals. Keep this on until the preview looks right.");
-	const [appr, apprF] = sw(c.requireApproval, "Require approval", "Matches wait in the approval queue for your decision instead of being removed automatically.");
-	const [on, onF] = sw(c.enabled, "Run on a schedule", "Run cleanup automatically at the interval below.");
+	const [dry, dryF] = sw(c.dryRun, "Dry run", "Report what would be removed without changing anything or queueing it. Keep this on until the preview looks right.");
+	const [on, onF] = sw(c.enabled, "Run on a schedule", "Run cleanup automatically on the schedule below.");
 	const f = (label, input, help) => h("div", { class: "field" }, h("label", { class: "lbl", htmlFor: input.id }, label), input, help ? h("div", { class: "help" }, help) : null);
 	const save = h("button", { type: "button", class: "primary", onclick: (e) => guard(e.currentTarget, async () => {
-		const goingLive = !dry.checked && c.dryRun, droppingApproval = !appr.checked && c.requireApproval && !dry.checked;
-		if (goingLive && !(await ask({ title: "Turn off dry run?", text: appr.checked ? "Runs will queue real removals for your approval." : "Approval is off too: runs will remove matching items immediately.", action: "Turn off dry run", danger: !appr.checked }))) return;
-		if (droppingApproval && !goingLive && !(await ask({ title: "Remove without approval?", text: "Matching items will be removed on every run without waiting for you.", action: "Turn off approval", danger: true }))) return;
-		Object.assign(c, await api("/config", { method: "PUT", body: { dryRun: dry.checked, requireApproval: appr.checked, enabled: on.checked, intervalHours: Number(interval.value), maxRemovalsPerRun: Number(max.value), approvalExpiryDays: Number(expiry.value), rejectionMemoryDays: rej.value === "forever" ? null : Number(rej.value) } }));
+		const goingLive = !dry.checked && c.dryRun;
+		if (goingLive && !(await ask({ title: "Turn off dry run?", text: `Runs will queue real removals and apply them automatically after ${delay.value} day${Number(delay.value) === 1 ? "" : "s"}, unless cancelled or protected.`, action: "Turn off dry run", danger: true }))) return;
+		Object.assign(c, await api("/config", { method: "PUT", body: { dryRun: dry.checked, enabled: on.checked, intervalEvery: Number(every.value), intervalUnit: unit.value, runTime: time.value, maxRemovalsPerRun: Number(max.value), queueDelayDays: Number(delay.value) } }));
 		lastPreview = null; toast("Settings saved"); refreshMode();
 	}) }, "Save settings");
 	const panel = (title, ...kids) => h("section", {}, h("div", { class: "panel" }, h("div", { class: "panel-head" }, h("h2", {}, title)), h("div", { class: "panel-body" }, ...kids)));
 	return h("div", { style: "max-width:760px" }, h("div", { class: "page-head" }, h("div", {}, h("h1", {}, "Settings"), h("p", { class: "lede" }, "How cautious Cleanarr is, and when it runs."))),
-		panel("Safety", dryF, apprF),
-		panel("Schedule", onF, h("div", { style: "margin-top:12px" }, f("Run every (hours)", interval))),
-		panel("Limits", h("div", { class: "cols" }, f("Max removals per run", max, "Caps both removals and new approvals."), f("Approvals expire after (days)", expiry)), f("Rejection memory", rej, "How long a rejected item stays out of the approval queue.")),
+		panel("Safety", dryF),
+		panel("Schedule", onF, h("div", { style: "margin-top:12px" }, h("div", { class: "cols" }, f("Run every", every), f("Unit", unit), f("At (server time)", time)))),
+		panel("Queue", h("div", { class: "cols" }, f("Max removals per run", max, "Caps both executions and new queue items per run."), f("Queue delay (days)", delay, "How long a match waits before Cleanarr applies it automatically."))),
 		h("div", { class: "row end", style: "margin-top:20px" }, save));
 }
 

@@ -16,6 +16,7 @@ export interface ArrApi {
 	list(): Promise<RawItem[]>;
 	get(id: number): Promise<RawItem>;
 	tags(): Promise<Array<{ id: number; label: string }>>;
+	diskspace(): Promise<Array<{ path?: string; freeSpace: number; totalSpace: number }>>;
 	qualityProfiles(): Promise<Array<{ id: number; name: string }>>;
 	/** Sonarr only: all episode files of a series. Radarr embeds the file in the movie. */
 	episodeFiles(seriesId: number): Promise<RawFile[]>;
@@ -72,6 +73,7 @@ export function createArrClient(
 		list: () => call("GET", `/${root}`),
 		get: (id) => call("GET", `/${root}/${id}`),
 		tags: () => call("GET", "/tag"),
+		diskspace: () => call("GET", "/diskspace"),
 		qualityProfiles: () => call("GET", "/qualityprofile"),
 		episodeFiles: (seriesId) =>
 			service === "sonarr" ? call("GET", `/episodefile?seriesId=${seriesId}`) : Promise.resolve([]),
