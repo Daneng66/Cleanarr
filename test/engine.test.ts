@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { DryRunError, RunInProgressError } from "../src/cleanup/engine.js";
 import { createScheduler } from "../src/cleanup/scheduler.js";
 import { DAY, GB, NOW, movie, series, setup, old } from "./helpers.js";
 
@@ -361,7 +360,7 @@ describe("approval workflow", () => {
 		await s.engine.run({ trigger: "manual" });
 		const [a] = s.store.approvals.list("pending");
 		s.store.config.update({ dryRun: true });
-		await expect(s.engine.approve(a!.id, { actor: "me" })).rejects.toBeInstanceOf(DryRunError);
+		await expect(s.engine.approve(a!.id, { actor: "me" })).rejects.toMatchObject({ code: "dry_run" });
 	});
 	it("recovers executions stranded by a crash as retryable, never as done", async () => {
 		const s = approvalSetup();
@@ -382,7 +381,7 @@ describe("run lease & scheduler", () => {
 		s.radarrApi.list = async () => { await new Promise((r) => setTimeout(r, 30)); return slow(); };
 		const [a, b] = await Promise.allSettled([s.engine.run({ trigger: "manual" }), s.engine.run({ trigger: "manual" })]);
 		expect([a.status, b.status].sort()).toEqual(["fulfilled", "rejected"]);
-		expect((a.status === "rejected" ? a.reason : (b as PromiseRejectedResult).reason)).toBeInstanceOf(RunInProgressError);
+		expect((a.status === "rejected" ? a.reason : (b as PromiseRejectedResult).reason)).toMatchObject({ code: "in_progress" });
 		// lease released afterwards
 		await expect(s.engine.run({ trigger: "manual" })).resolves.toBeDefined();
 	});

@@ -1,14 +1,13 @@
 import { createArrClient } from "./arr/client.js";
-import type { Db } from "./db.js";
 import { createSeerrProvider, testSeerr } from "./seerr/seerr.js";
 import type { Instance } from "./types.js";
-import { createWatchProvider, testPlex } from "./watch/index.js";
+import { createPlexProvider, testPlex } from "./watch/plex.js";
 
 /** Production wiring from stored instances to their service clients. */
-export function createProviders(db: Db) {
+export function createProviders() {
 	return {
 		arr: (i: Instance) => createArrClient(i),
-		watch: (i: Instance) => createWatchProvider(i),
+		watch: (i: Instance) => createPlexProvider(i),
 		seerr: (i: Instance) => createSeerrProvider(i),
 	};
 }

@@ -1,5 +1,5 @@
 import type { Engine, Logger } from "./engine.js";
-import { RunInProgressError } from "./engine.js";
+import { ConflictError } from "./engine.js";
 import type { Store } from "../store.js";
 
 export function createScheduler(deps: { store: Store; engine: Engine; log: Logger; tickMs?: number; now?: () => Date }) {
@@ -18,7 +18,7 @@ export function createScheduler(deps: { store: Store; engine: Engine; log: Logge
 			await engine.run({ trigger: "scheduled" });
 			return true;
 		} catch (e) {
-			if (!(e instanceof RunInProgressError)) {
+			if (!(e instanceof ConflictError && e.code === "in_progress")) {
 				log.error({ err: (e as Error).message }, "scheduled cleanup failed");
 				// Back off a full interval so a persistent failure can't hot-loop.
 				store.config.markRun(now());

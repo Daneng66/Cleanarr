@@ -193,74 +193,13 @@ describe("testConnection", () => {
 	});
 });
 
-describe("migration 2", () => {
-	it("upgrades a v1 database: renames tautulli_* rule types, keeps instances, allows plex/seerr", () => {
+describe("migrate", () => {
+	it("stamps a fresh database at the baseline version and is idempotent", () => {
 		const db = new Database(":memory:");
-		migrate(db, 1); // schema as shipped before Plex/Seerr support
-		const enc = createEncryptor("x");
-		db.prepare("INSERT INTO instances (id,name,type,url,api_key_enc,enabled,created_at) VALUES ('t1','Tautulli','tautulli','http://t',?,1,'2026-01-01')").run(enc.encrypt("k"));
-		const expr = JSON.stringify({ op: "and", of: [{ type: "tautulli_last_watched", params: { operator: "not_watched_in_days", days: 90 } }, { type: "tautulli_watch_count", params: { operator: "equals", count: 0 } }, { type: "tautulli_watched_by", params: { operator: "watched_by_any", users: ["a"] } }, { type: "age", params: { operator: "older_than", days: 5 } }] });
-		db.prepare("INSERT INTO rules (id,name,expression,created_at,updated_at) VALUES ('r1','old',?,'2026-01-01','2026-01-01')").run(expr);
-		expect(() => db.prepare("INSERT INTO instances (id,name,type,url,api_key_enc,created_at) VALUES ('p','P','plex','http://p','x','now')").run()).toThrow(/CHECK/);
-
-		migrate(db, 2);
-
-		const types = (JSON.parse((db.prepare("SELECT expression FROM rules WHERE id='r1'").get() as { expression: string }).expression).of as Array<{ type: string }>).map((n) => n.type);
-		expect(types).toEqual(["last_watched", "watch_count", "watched_by", "age"]);
-		expect(db.prepare("SELECT type FROM instances WHERE id='t1'").get()).toEqual({ type: "tautulli" });
-		expect(() => db.prepare("INSERT INTO instances (id,name,type,url,api_key_enc,created_at) VALUES ('p','P','plex','http://p','x','now')").run()).not.toThrow();
-		expect(() => db.prepare("INSERT INTO instances (id,name,type,url,api_key_enc,created_at) VALUES ('s','S','seerr','http://s','x','now')").run()).not.toThrow();
-		expect(db.pragma("user_version", { simple: true })).toBe(2);
-	});
-});
-
-describe("migration 3", () => {
-	it("drops Tautulli instances and its cache, keeps everything else", () => {
-		const db = new Database(":memory:");
-		migrate(db, 2);
-		db.prepare("INSERT INTO instances (id,name,type,url,api_key_enc,created_at) VALUES ('t','T','tautulli','http://t','x','now')").run();
-		db.prepare("INSERT INTO instances (id,name,type,url,api_key_enc,created_at) VALUES ('p','P','plex','http://p','x','now')").run();
-
-		migrate(db, 3);
-
-		expect(db.prepare("SELECT id FROM instances").all()).toEqual([{ id: "p" }]);
-		expect(db.prepare("SELECT name FROM sqlite_master WHERE name='tautulli_guid_cache'").get()).toBeUndefined();
-		expect(() => db.prepare("INSERT INTO instances (id,name,type,url,api_key_enc,created_at) VALUES ('t2','T','tautulli','http://t','x','now')").run()).toThrow(/CHECK/);
-		expect(db.pragma("user_version", { simple: true })).toBe(3);
-	});
-});
-
-describe("migration 4", () => {
-	it("keeps rules and approvals and allows season rules and approvals", () => {
-		const db = new Database(":memory:");
-		migrate(db, 3);
-		db.prepare("INSERT INTO rules (id,name,expression,created_at,updated_at) VALUES ('r1','R','{}','now','now')").run();
-		db.prepare("INSERT INTO approvals (id,instance_id,arr_item_id,item_type,title,rule_id,rule_name,reason,action,safety_snapshot,expires_at,created_at) VALUES ('a1','i',1,'movie','M','r1','R','x','delete','{}','now','now')").run();
-
-		migrate(db, 4);
-
-		expect(db.prepare("SELECT id, action FROM rules").all()).toEqual([{ id: "r1", action: "delete" }]);
-		expect(db.prepare("SELECT id, season_number FROM approvals").all()).toEqual([{ id: "a1", season_number: null }]);
-		expect(() => db.prepare("UPDATE rules SET action='delete_season'").run()).not.toThrow();
-		expect(() => db.prepare("INSERT INTO approvals (id,instance_id,arr_item_id,season_number,item_type,title,rule_id,rule_name,reason,action,safety_snapshot,expires_at,created_at) VALUES ('a2','i',1,2,'season','S','r1','R','x','delete_season','{}','now','now')").run()).not.toThrow();
-		expect(db.pragma("user_version", { simple: true })).toBe(4);
-	});
-});
-
-describe("migration 5", () => {
-	it("replaces approval_expiry_days/require_approval with queue_delay_days, renames expires_at, and adds protected_items", () => {
-		const db = new Database(":memory:");
-		migrate(db, 4);
-		db.prepare("UPDATE config SET approval_expiry_days = 9, require_approval = 0 WHERE id = 1").run();
-		db.prepare("INSERT INTO rules (id,name,expression,created_at,updated_at) VALUES ('r1','R','{}','now','now')").run();
-		db.prepare("INSERT INTO approvals (id,instance_id,arr_item_id,item_type,title,rule_id,rule_name,reason,action,safety_snapshot,expires_at,created_at) VALUES ('a1','i',1,'movie','M','r1','R','x','delete','{}','2026-01-01','now')").run();
-
-		migrate(db, 5);
-
-		expect(db.prepare("SELECT queue_delay_days FROM config WHERE id=1").get()).toEqual({ queue_delay_days: 9 });
-		expect(db.prepare("SELECT name FROM pragma_table_info('config') WHERE name IN ('require_approval','approval_expiry_days')").all()).toEqual([]);
-		expect(db.prepare("SELECT id, execute_after FROM approvals WHERE id='a1'").get()).toEqual({ id: "a1", execute_after: "2026-01-01" });
-		expect(() => db.prepare("INSERT INTO protected_items (id,instance_id,arr_item_id,item_type,season_number,title,created_at) VALUES ('p1','i',1,'movie',NULL,'M','now')").run()).not.toThrow();
-		expect(db.pragma("user_version", { simple: true })).toBe(5);
+		migrate(db);
+		migrate(db);
+		expect(db.pragma("user_version", { simple: true })).toBe(10);
+		expect(db.prepare("SELECT id FROM config").all()).toEqual([{ id: 1 }]);
+		expect(() => db.prepare("INSERT INTO instances (id,name,type,url,api_key_enc,created_at) VALUES ('t','T','tautulli','http://t','x','now')").run()).toThrow(/CHECK/);
 	});
 });

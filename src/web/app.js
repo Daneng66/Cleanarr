@@ -53,7 +53,7 @@ const iconBtn = (name, label, onclick, cls = "") => h("button", { type: "button"
 // mark, label, tone (tone defaults to the mark)
 const STATES = {
 	flagged: ["flagged", "Flagged"], matches: ["flagged", "Matches"],
-	pending: ["queued", "Queued"], pending_approval: ["queued", "Queued"], failed: ["queued", "Failed"], running: ["queued", "Running"],
+	pending: ["queued", "Queued"], failed: ["queued", "Failed"], running: ["queued", "Running"],
 	reclaimed: ["ejected", "Reclaimed"], removed: ["ejected", "Removed"], files_deleted: ["ejected", "Files deleted"], unmonitored: ["ejected", "Unmonitored"],
 	completed: ["loaded", "Completed", "ok"], success: ["loaded", "Success", "ok"], protected: ["protected", "Protected"],
 	skipped: ["loaded", "Skipped"], no_match: ["loaded", "No match"], out_of_scope: ["loaded", "Out of scope"],
@@ -522,14 +522,16 @@ async function renderMissing() {
 	const { missing } = await getPreview();
 	return h("div", {}, backHead(plural(missing.length, "title") + " with no file", "Nothing on disk for these, yet. Open them in Sonarr/Radarr, or protect them to keep them out of cleanup."), missing.length ? missingList(missing) : empty("No missing files"));
 }
+function skipArt(d) {
+	return d.poster
+		? h("img", { src: d.poster, alt: "", class: "art", loading: "lazy", decoding: "async", onerror: (e) => e.target.replaceWith(h("span", { class: "art noart" }, d.title)) })
+		: h("span", { class: "art noart" }, d.title);
+}
 /** "Missing files" list: titles with nothing on disk yet. */
 function missingList(rows) {
 	const sorted = [...rows].sort((a, b) => a.title.localeCompare(b.title));
 	return h("div", { class: "skip-grid" }, sorted.map((d) => {
-		const art = d.poster
-			? h("img", { src: d.poster, alt: "", class: "art", loading: "lazy", decoding: "async", onerror: (e) => e.target.replaceWith(h("span", { class: "art noart" }, d.title)) })
-			: h("span", { class: "art noart" }, d.title);
-		return h("div", { class: "skip-card" }, art,
+		return h("div", { class: "skip-card" }, skipArt(d),
 			h("div", { class: "body" },
 				h("div", { class: "t", title: nameOf(d) }, nameOf(d), d.year ? ` (${d.year})` : "", h("small", {}, kindLabel(d.itemType), d.certification ? [" · ", h("span", { class: "cert" }, d.certification)] : null)),
 				h("div", { class: "why" }, d.monitored ? "Monitored" : "Not monitored", d.added ? [" · added ", timeEl(d.added)] : null),
@@ -575,10 +577,7 @@ function skippedList(rows, toggle) {
 	return h("div", { class: "skip-grid" }, sorted.map((d) => {
 		const [cat, label] = skipCategory(d);
 		const badge = state(cat, label);
-		const art = d.poster
-			? h("img", { src: d.poster, alt: "", class: "art", loading: "lazy", decoding: "async", onerror: (e) => e.target.replaceWith(h("span", { class: "art noart" }, d.title)) })
-			: h("span", { class: "art noart" }, d.title);
-		return h("div", { class: "skip-card" }, art,
+		return h("div", { class: "skip-card" }, skipArt(d),
 			h("div", { class: "body" },
 				h("div", { class: "head" }, h("div", { class: "t", title: nameOf(d) }, nameOf(d), h("small", {}, kindLabel(d.itemType), d.certification ? [" · ", h("span", { class: "cert" }, d.certification)] : null)), h("span", { class: "sz" }, bytes(d.sizeOnDisk))),
 				cat === "protected" ? keptBy(d.message) : null,

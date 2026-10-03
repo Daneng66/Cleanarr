@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import fastifyStatic from "@fastify/static";
 import Fastify, { type FastifyInstance } from "fastify";
 import { ZodError } from "zod";
-import { ConflictError, DryRunError, RunInProgressError, createEngine, type Engine } from "./cleanup/engine.js";
+import { ConflictError, createEngine, type Engine } from "./cleanup/engine.js";
 import { describeRuleTypes, } from "./rules/registry.js";
 import { describeTemplates } from "./rules/templates.js";
 import { parseExpression } from "./rules/expression.js";
@@ -34,7 +34,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
 	const app = Fastify({ logger: deps.logger ?? false, bodyLimit: 1_000_000 });
 	const engine =
 		deps.engine ??
-		createEngine({ store, log: app.log, ...createProviders(db) });
+		createEngine({ store, log: app.log, ...createProviders() });
 
 	// Action endpoints (/preview, /run) take no required body; tolerate an empty one with a JSON content-type.
 	app.addContentTypeParser("application/json", { parseAs: "string" }, (_req, body, done) => {
@@ -47,9 +47,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
 
 	app.setErrorHandler((err: any, _req, reply) => {
 		if (err instanceof ZodError) return reply.code(400).send({ error: "Validation failed", issues: err.issues.map((i) => `${i.path.join(".") || "body"}: ${i.message}`) });
-		if (err instanceof RunInProgressError) return reply.code(409).send({ error: err.message });
-		if (err instanceof DryRunError) return reply.code(409).send({ error: err.message, code: "dry_run" });
-		if (err instanceof ConflictError) return reply.code(409).send({ error: err.message });
+		if (err instanceof ConflictError) return reply.code(409).send({ error: err.message, code: err.code });
 		if (err.statusCode && err.statusCode < 500) return reply.code(err.statusCode).send({ error: err.message });
 		app.log.error(err);
 		return reply.code(500).send({ error: "Internal error" });

@@ -2,12 +2,15 @@ import Database from "better-sqlite3";
 
 export type Db = Database.Database;
 
-const MIGRATIONS: string[] = [
-	`
+// Fresh databases get the final schema directly, stamped as version BASELINE. Installs already at
+// BASELINE or later skip it; add future schema changes to MIGRATIONS (MIGRATIONS[0] is version BASELINE + 1).
+const BASELINE = 10;
+
+const BASELINE_SCHEMA = `
 CREATE TABLE instances (
 	id TEXT PRIMARY KEY,
 	name TEXT NOT NULL,
-	type TEXT NOT NULL CHECK (type IN ('sonarr','radarr','tautulli')),
+	type TEXT NOT NULL CHECK (type IN ('sonarr','radarr','plex','seerr')),
 	url TEXT NOT NULL,
 	api_key_enc TEXT NOT NULL,
 	enabled INTEGER NOT NULL DEFAULT 1,
@@ -17,16 +20,17 @@ CREATE TABLE instances (
 CREATE TABLE config (
 	id INTEGER PRIMARY KEY CHECK (id = 1),
 	enabled INTEGER NOT NULL DEFAULT 0,
-	interval_hours INTEGER NOT NULL DEFAULT 24,
 	dry_run INTEGER NOT NULL DEFAULT 1,
 	max_removals_per_run INTEGER NOT NULL DEFAULT 50,
-	require_approval INTEGER NOT NULL DEFAULT 1,
-	approval_expiry_days INTEGER NOT NULL DEFAULT 7,
-	rejection_memory_days INTEGER DEFAULT 0,
+	queue_delay_days INTEGER NOT NULL DEFAULT 3,
 	last_run_at TEXT,
 	next_run_at TEXT,
 	run_claim_token TEXT,
-	run_claimed_at TEXT
+	run_claimed_at TEXT,
+	interval_every INTEGER NOT NULL DEFAULT 1,
+	interval_unit TEXT NOT NULL DEFAULT 'days' CHECK (interval_unit IN ('days','weeks','months')),
+	run_time TEXT NOT NULL DEFAULT '03:00',
+	audit_retention_days INTEGER NOT NULL DEFAULT 7
 );
 INSERT INTO config (id) VALUES (1);
 
@@ -36,23 +40,22 @@ CREATE TABLE rules (
 	enabled INTEGER NOT NULL DEFAULT 1,
 	priority INTEGER NOT NULL DEFAULT 0,
 	mode TEXT NOT NULL DEFAULT 'cleanup' CHECK (mode IN ('cleanup','retention')),
-	action TEXT NOT NULL DEFAULT 'delete' CHECK (action IN ('delete','unmonitor','delete_files')),
+	action TEXT NOT NULL DEFAULT 'delete' CHECK (action IN ('delete','unmonitor','delete_files','delete_season')),
 	expression TEXT NOT NULL,
 	service_filter TEXT,
 	instance_filter TEXT,
 	exclude_tags TEXT,
 	exclude_titles TEXT,
-	use_global_rejection_memory INTEGER NOT NULL DEFAULT 1,
-	rejection_memory_days INTEGER DEFAULT 0,
 	created_at TEXT NOT NULL,
 	updated_at TEXT NOT NULL
 );
 
+-- The delay queue: items auto-execute once execute_after has passed.
 CREATE TABLE approvals (
 	id TEXT PRIMARY KEY,
 	instance_id TEXT NOT NULL,
 	arr_item_id INTEGER NOT NULL,
-	item_type TEXT NOT NULL CHECK (item_type IN ('movie','series')),
+	item_type TEXT NOT NULL CHECK (item_type IN ('movie','series','season')),
 	title TEXT NOT NULL,
 	year INTEGER,
 	size_on_disk INTEGER NOT NULL DEFAULT 0,
@@ -60,19 +63,34 @@ CREATE TABLE approvals (
 	rule_name TEXT NOT NULL,
 	reason TEXT NOT NULL,
 	action TEXT NOT NULL,
-	status TEXT NOT NULL DEFAULT 'pending'
-		CHECK (status IN ('pending','approved','retry_pending','rejected','executing','retry_executing','executed','expired','blocked')),
+	status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','failed','reclaimed')),
 	execution_token TEXT,
 	attempt_count INTEGER NOT NULL DEFAULT 0,
 	safety_snapshot TEXT NOT NULL,
 	last_error TEXT,
 	reviewed_at TEXT,
 	executed_at TEXT,
-	expires_at TEXT NOT NULL,
-	created_at TEXT NOT NULL
+	execute_after TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	season_number INTEGER
 );
 CREATE INDEX approvals_status ON approvals (status);
 CREATE INDEX approvals_target ON approvals (instance_id, arr_item_id, item_type);
+CREATE INDEX approvals_execute_after ON approvals (execute_after);
+
+-- Items excluded from cleanup regardless of any rule; ignore_retention = 1 is an override, not protection.
+CREATE TABLE protected_items (
+	id TEXT PRIMARY KEY,
+	instance_id TEXT NOT NULL,
+	arr_item_id INTEGER NOT NULL,
+	item_type TEXT NOT NULL CHECK (item_type IN ('movie','series','season')),
+	season_number INTEGER,
+	title TEXT NOT NULL,
+	note TEXT,
+	created_at TEXT NOT NULL,
+	ignore_retention INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX protected_items_target ON protected_items (instance_id, arr_item_id, item_type, season_number);
 
 CREATE TABLE run_logs (
 	id TEXT PRIMARY KEY,
@@ -118,262 +136,9 @@ CREATE TABLE audit_events (
 );
 CREATE INDEX audit_correlation ON audit_events (correlation_id);
 CREATE INDEX audit_created ON audit_events (created_at);
+`;
 
--- Tautulli rating_key -> external ids, so we don't re-resolve every key each run.
-CREATE TABLE tautulli_guid_cache (
-	instance_id TEXT NOT NULL,
-	rating_key TEXT NOT NULL,
-	guids TEXT NOT NULL,
-	fetched_at TEXT NOT NULL,
-	PRIMARY KEY (instance_id, rating_key)
-);
-`,
-	// 2: Plex + Seerr instance types; watch rules are provider-neutral (were tautulli_*).
-	`
-CREATE TABLE instances_new (
-	id TEXT PRIMARY KEY,
-	name TEXT NOT NULL,
-	type TEXT NOT NULL CHECK (type IN ('sonarr','radarr','plex','tautulli','seerr')),
-	url TEXT NOT NULL,
-	api_key_enc TEXT NOT NULL,
-	enabled INTEGER NOT NULL DEFAULT 1,
-	created_at TEXT NOT NULL
-);
-INSERT INTO instances_new SELECT * FROM instances;
-DROP TABLE instances;
-ALTER TABLE instances_new RENAME TO instances;
-
-UPDATE rules SET expression = REPLACE(REPLACE(REPLACE(expression,
-	'"tautulli_last_watched"', '"last_watched"'),
-	'"tautulli_watch_count"', '"watch_count"'),
-	'"tautulli_watched_by"', '"watched_by"');
-`,
-	// 3: Tautulli support removed; Plex is the only watch-history source.
-	`
-DELETE FROM instances WHERE type = 'tautulli';
-CREATE TABLE instances_new (
-	id TEXT PRIMARY KEY,
-	name TEXT NOT NULL,
-	type TEXT NOT NULL CHECK (type IN ('sonarr','radarr','plex','seerr')),
-	url TEXT NOT NULL,
-	api_key_enc TEXT NOT NULL,
-	enabled INTEGER NOT NULL DEFAULT 1,
-	created_at TEXT NOT NULL
-);
-INSERT INTO instances_new SELECT * FROM instances;
-DROP TABLE instances;
-ALTER TABLE instances_new RENAME TO instances;
-DROP TABLE tautulli_guid_cache;
-`,
-	// 4: Per-season cleanup: "delete_season" rules and season approvals.
-	`
-CREATE TABLE rules_new (
-	id TEXT PRIMARY KEY,
-	name TEXT NOT NULL,
-	enabled INTEGER NOT NULL DEFAULT 1,
-	priority INTEGER NOT NULL DEFAULT 0,
-	mode TEXT NOT NULL DEFAULT 'cleanup' CHECK (mode IN ('cleanup','retention')),
-	action TEXT NOT NULL DEFAULT 'delete' CHECK (action IN ('delete','unmonitor','delete_files','delete_season')),
-	expression TEXT NOT NULL,
-	service_filter TEXT,
-	instance_filter TEXT,
-	exclude_tags TEXT,
-	exclude_titles TEXT,
-	use_global_rejection_memory INTEGER NOT NULL DEFAULT 1,
-	rejection_memory_days INTEGER DEFAULT 0,
-	created_at TEXT NOT NULL,
-	updated_at TEXT NOT NULL
-);
-INSERT INTO rules_new SELECT * FROM rules;
-DROP TABLE rules;
-ALTER TABLE rules_new RENAME TO rules;
-
-CREATE TABLE approvals_new (
-	id TEXT PRIMARY KEY,
-	instance_id TEXT NOT NULL,
-	arr_item_id INTEGER NOT NULL,
-	item_type TEXT NOT NULL CHECK (item_type IN ('movie','series','season')),
-	title TEXT NOT NULL,
-	year INTEGER,
-	size_on_disk INTEGER NOT NULL DEFAULT 0,
-	rule_id TEXT NOT NULL,
-	rule_name TEXT NOT NULL,
-	reason TEXT NOT NULL,
-	action TEXT NOT NULL,
-	status TEXT NOT NULL DEFAULT 'pending'
-		CHECK (status IN ('pending','approved','retry_pending','rejected','executing','retry_executing','executed','expired','blocked')),
-	execution_token TEXT,
-	attempt_count INTEGER NOT NULL DEFAULT 0,
-	safety_snapshot TEXT NOT NULL,
-	last_error TEXT,
-	reviewed_at TEXT,
-	executed_at TEXT,
-	expires_at TEXT NOT NULL,
-	created_at TEXT NOT NULL,
-	season_number INTEGER
-);
-INSERT INTO approvals_new SELECT *, NULL FROM approvals;
-DROP TABLE approvals;
-ALTER TABLE approvals_new RENAME TO approvals;
-CREATE INDEX approvals_status ON approvals (status);
-CREATE INDEX approvals_target ON approvals (instance_id, arr_item_id, item_type);
-`,
-	// 5: Approvals replaced by a delay queue (no manual gate; items auto-execute once their wait elapses).
-	// "expires_at" (a safety-net deadline) becomes "execute_after" (the earliest time it's allowed to run).
-	// Manual protection: items excluded from cleanup regardless of any rule.
-	`
-CREATE TABLE config_new (
-	id INTEGER PRIMARY KEY CHECK (id = 1),
-	enabled INTEGER NOT NULL DEFAULT 0,
-	interval_hours INTEGER NOT NULL DEFAULT 24,
-	dry_run INTEGER NOT NULL DEFAULT 1,
-	max_removals_per_run INTEGER NOT NULL DEFAULT 50,
-	queue_delay_days INTEGER NOT NULL DEFAULT 3,
-	rejection_memory_days INTEGER DEFAULT 0,
-	last_run_at TEXT,
-	next_run_at TEXT,
-	run_claim_token TEXT,
-	run_claimed_at TEXT
-);
-INSERT INTO config_new (id, enabled, interval_hours, dry_run, max_removals_per_run, queue_delay_days, rejection_memory_days, last_run_at, next_run_at, run_claim_token, run_claimed_at)
-	SELECT id, enabled, interval_hours, dry_run, max_removals_per_run, approval_expiry_days, rejection_memory_days, last_run_at, next_run_at, run_claim_token, run_claimed_at FROM config;
-DROP TABLE config;
-ALTER TABLE config_new RENAME TO config;
-
-CREATE TABLE approvals_new (
-	id TEXT PRIMARY KEY,
-	instance_id TEXT NOT NULL,
-	arr_item_id INTEGER NOT NULL,
-	item_type TEXT NOT NULL CHECK (item_type IN ('movie','series','season')),
-	title TEXT NOT NULL,
-	year INTEGER,
-	size_on_disk INTEGER NOT NULL DEFAULT 0,
-	rule_id TEXT NOT NULL,
-	rule_name TEXT NOT NULL,
-	reason TEXT NOT NULL,
-	action TEXT NOT NULL,
-	status TEXT NOT NULL DEFAULT 'pending'
-		CHECK (status IN ('pending','approved','retry_pending','rejected','executing','retry_executing','executed','expired','blocked')),
-	execution_token TEXT,
-	attempt_count INTEGER NOT NULL DEFAULT 0,
-	safety_snapshot TEXT NOT NULL,
-	last_error TEXT,
-	reviewed_at TEXT,
-	executed_at TEXT,
-	execute_after TEXT NOT NULL,
-	created_at TEXT NOT NULL,
-	season_number INTEGER
-);
-INSERT INTO approvals_new SELECT id,instance_id,arr_item_id,item_type,title,year,size_on_disk,rule_id,rule_name,reason,action,status,execution_token,attempt_count,safety_snapshot,last_error,reviewed_at,executed_at,expires_at,created_at,season_number FROM approvals;
-DROP TABLE approvals;
-ALTER TABLE approvals_new RENAME TO approvals;
-CREATE INDEX approvals_status ON approvals (status);
-CREATE INDEX approvals_target ON approvals (instance_id, arr_item_id, item_type);
-CREATE INDEX approvals_execute_after ON approvals (execute_after);
-
-CREATE TABLE protected_items (
-	id TEXT PRIMARY KEY,
-	instance_id TEXT NOT NULL,
-	arr_item_id INTEGER NOT NULL,
-	item_type TEXT NOT NULL CHECK (item_type IN ('movie','series','season')),
-	season_number INTEGER,
-	title TEXT NOT NULL,
-	note TEXT,
-	created_at TEXT NOT NULL
-);
-CREATE INDEX protected_items_target ON protected_items (instance_id, arr_item_id, item_type, season_number);
-`,
-	// 6: A protected_items row with ignore_retention = 1 is an override, not protection: retention rules no longer shield that item.
-	`ALTER TABLE protected_items ADD COLUMN ignore_retention INTEGER NOT NULL DEFAULT 0;`,
-	// 7: Rejection memory removed; protecting an item is the only durable way to keep it out of cleanup.
-	`
-CREATE TABLE config_new (
-	id INTEGER PRIMARY KEY CHECK (id = 1),
-	enabled INTEGER NOT NULL DEFAULT 0,
-	interval_hours INTEGER NOT NULL DEFAULT 24,
-	dry_run INTEGER NOT NULL DEFAULT 1,
-	max_removals_per_run INTEGER NOT NULL DEFAULT 50,
-	queue_delay_days INTEGER NOT NULL DEFAULT 3,
-	last_run_at TEXT,
-	next_run_at TEXT,
-	run_claim_token TEXT,
-	run_claimed_at TEXT
-);
-INSERT INTO config_new (id, enabled, interval_hours, dry_run, max_removals_per_run, queue_delay_days, last_run_at, next_run_at, run_claim_token, run_claimed_at)
-	SELECT id, enabled, interval_hours, dry_run, max_removals_per_run, queue_delay_days, last_run_at, next_run_at, run_claim_token, run_claimed_at FROM config;
-DROP TABLE config;
-ALTER TABLE config_new RENAME TO config;
-
-CREATE TABLE rules_new (
-	id TEXT PRIMARY KEY,
-	name TEXT NOT NULL,
-	enabled INTEGER NOT NULL DEFAULT 1,
-	priority INTEGER NOT NULL DEFAULT 0,
-	mode TEXT NOT NULL DEFAULT 'cleanup' CHECK (mode IN ('cleanup','retention')),
-	action TEXT NOT NULL DEFAULT 'delete' CHECK (action IN ('delete','unmonitor','delete_files','delete_season')),
-	expression TEXT NOT NULL,
-	service_filter TEXT,
-	instance_filter TEXT,
-	exclude_tags TEXT,
-	exclude_titles TEXT,
-	created_at TEXT NOT NULL,
-	updated_at TEXT NOT NULL
-);
-INSERT INTO rules_new (id,name,enabled,priority,mode,action,expression,service_filter,instance_filter,exclude_tags,exclude_titles,created_at,updated_at)
-	SELECT id,name,enabled,priority,mode,action,expression,service_filter,instance_filter,exclude_tags,exclude_titles,created_at,updated_at FROM rules;
-DROP TABLE rules;
-ALTER TABLE rules_new RENAME TO rules;
-`,
-	// 8: Schedule is "every N days/weeks/months at HH:MM" instead of a raw hour count; existing hourly intervals become whole days.
-	`
-ALTER TABLE config ADD COLUMN interval_every INTEGER NOT NULL DEFAULT 1;
-ALTER TABLE config ADD COLUMN interval_unit TEXT NOT NULL DEFAULT 'days' CHECK (interval_unit IN ('days','weeks','months'));
-ALTER TABLE config ADD COLUMN run_time TEXT NOT NULL DEFAULT '03:00';
-UPDATE config SET interval_every = MAX(1, interval_hours / 24);
-ALTER TABLE config DROP COLUMN interval_hours;
-`,
-	// 9: Approval states collapse to pending / failed / reclaimed. Rejected and expired rows are dropped; anything unfinished or blocked is failed (retried next run).
-	`
-DELETE FROM approvals WHERE status IN ('rejected','expired');
-UPDATE audit_events SET event_type = 'reclaimed' WHERE event_type = 'executed';
-CREATE TABLE approvals_new (
-	id TEXT PRIMARY KEY,
-	instance_id TEXT NOT NULL,
-	arr_item_id INTEGER NOT NULL,
-	item_type TEXT NOT NULL CHECK (item_type IN ('movie','series','season')),
-	title TEXT NOT NULL,
-	year INTEGER,
-	size_on_disk INTEGER NOT NULL DEFAULT 0,
-	rule_id TEXT NOT NULL,
-	rule_name TEXT NOT NULL,
-	reason TEXT NOT NULL,
-	action TEXT NOT NULL,
-	status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','failed','reclaimed')),
-	execution_token TEXT,
-	attempt_count INTEGER NOT NULL DEFAULT 0,
-	safety_snapshot TEXT NOT NULL,
-	last_error TEXT,
-	reviewed_at TEXT,
-	executed_at TEXT,
-	execute_after TEXT NOT NULL,
-	created_at TEXT NOT NULL,
-	season_number INTEGER
-);
-INSERT INTO approvals_new SELECT id,instance_id,arr_item_id,item_type,title,year,size_on_disk,rule_id,rule_name,reason,action,
-	CASE status WHEN 'executed' THEN 'reclaimed' WHEN 'approved' THEN 'pending' WHEN 'retry_pending' THEN 'failed' WHEN 'blocked' THEN 'failed' WHEN 'executing' THEN 'failed' WHEN 'retry_executing' THEN 'failed' ELSE status END,
-	CASE WHEN status IN ('retry_pending','blocked','executing','retry_executing') THEN NULL ELSE execution_token END,
-	attempt_count,safety_snapshot,last_error,reviewed_at,executed_at,execute_after,created_at,season_number FROM approvals;
-DROP TABLE approvals;
-ALTER TABLE approvals_new RENAME TO approvals;
-CREATE INDEX approvals_status ON approvals (status);
-CREATE INDEX approvals_target ON approvals (instance_id, arr_item_id, item_type);
-CREATE INDEX approvals_execute_after ON approvals (execute_after);
-`,
-	// 10: Audit log retention, so the trail doesn't grow forever.
-	`
-ALTER TABLE config ADD COLUMN audit_retention_days INTEGER NOT NULL DEFAULT 7;
-`,
-];
+const MIGRATIONS: string[] = [];
 
 export function openDb(path: string): Db {
 	const db = new Database(path);
@@ -384,12 +149,13 @@ export function openDb(path: string): Db {
 	return db;
 }
 
-export function migrate(db: Db, target: number = MIGRATIONS.length): void {
-	const current = db.pragma("user_version", { simple: true }) as number;
-	for (let v = current; v < target; v++) {
+export function migrate(db: Db): void {
+	const apply = (sql: string, version: number) =>
 		db.transaction(() => {
-			db.exec(MIGRATIONS[v] as string);
-			db.pragma(`user_version = ${v + 1}`);
+			db.exec(sql);
+			db.pragma(`user_version = ${version}`);
 		})();
-	}
+	let v = db.pragma("user_version", { simple: true }) as number;
+	if (v === 0) apply(BASELINE_SCHEMA, (v = BASELINE));
+	for (; v < BASELINE + MIGRATIONS.length; v++) apply(MIGRATIONS[v - BASELINE] as string, v + 1);
 }

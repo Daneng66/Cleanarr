@@ -56,7 +56,7 @@ const inList = (value: string | null, list: string[]) => value !== null && list.
  * 12-and-over ratings count as children's (owner's choice), in every spelling seen: 12, 12A, 12+, -12, FSK 12.
  * Deliberately absent: "A" (all ages in Spain, adults-only in India), "13", PG-13, TV-PG.
  */
-export const KIDS_RATINGS_BY_COUNTRY: Record<string, string[]> = {
+const KIDS_RATINGS_BY_COUNTRY: Record<string, string[]> = {
 	US: ["G", "PG", "TV-Y", "TV-Y7", "TV-Y7-FV", "TV-G"],
 	GB: ["U", "PG", "Uc"],
 	IE: ["G", "PG"],

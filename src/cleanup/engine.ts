@@ -6,7 +6,7 @@ import { passesFilters } from "../rules/filters.js";
 import type { EvalContext } from "../rules/registry.js";
 import type { ApprovalRow, SafetySnapshot, Store } from "../store.js";
 import type { SeerrProvider, SeerrRequest } from "../seerr/seerr.js";
-import type { WatchProvider } from "../watch/index.js";
+import type { WatchProvider } from "../watch/plex.js";
 import { mergeEpisodes } from "../watch/plex.js";
 import type { CleanupAction, Candidate, ConfigRecord, Instance, LibraryItem, RuleRecord, Trigger, WatchInfo } from "../types.js";
 
@@ -25,24 +25,18 @@ export interface EngineDeps {
 	log: Logger;
 }
 
-export class RunInProgressError extends Error {
-	constructor() {
-		super("A cleanup run is already in progress");
+export class ConflictError extends Error {
+	constructor(message: string, readonly code?: "dry_run" | "in_progress") {
+		super(message);
 	}
 }
-export class DryRunError extends Error {
-	constructor() {
-		super("Cleanup is in dry-run mode; disable dry-run in settings before executing approvals");
-	}
-}
-export class ConflictError extends Error {}
 
 const LEASE_STALE_MS = 30 * 60_000;
 const MAX_DETAILS = 2000;
 const MAX_ATTEMPTS = 3;
 const FILE_FETCH_CONCURRENCY = 4;
 
-export type Outcome = "flagged" | "pending_approval" | "removed" | "unmonitored" | "files_deleted" | "skipped" | "blocked" | "failed";
+export type Outcome = "flagged" | "pending" | "removed" | "unmonitored" | "files_deleted" | "skipped" | "blocked" | "failed";
 export interface RunDetail {
 	instanceId: string;
 	arrItemId: number;
@@ -472,7 +466,7 @@ export function createEngine(deps: EngineDeps) {
 	async function approve(id: string, opts: { actor: string; trigger?: Trigger; runLogId?: string }): Promise<ApprovalRow> {
 		const a0 = store.approvals.get(id);
 		if (!a0) throw new ConflictError("Approval not found");
-		if (store.config.get().dryRun) throw new DryRunError();
+		if (store.config.get().dryRun) throw new ConflictError("Cleanup is in dry-run mode; disable dry-run in settings before executing approvals", "dry_run");
 		const trigger = opts.trigger ?? (a0.status === "failed" ? "retry" : "approval");
 		const token = randomUUID();
 		if (!store.approvals.claim(id, token)) {
@@ -526,7 +520,7 @@ export function createEngine(deps: EngineDeps) {
 		const dryRun = opts.forceDryRun === true || config.dryRun;
 		const actor = opts.actor ?? (opts.trigger === "scheduled" ? "scheduler" : "operator");
 		const token = store.config.claimRun(LEASE_STALE_MS);
-		if (!token) throw new RunInProgressError();
+		if (!token) throw new ConflictError("A cleanup run is already in progress", "in_progress");
 		const heartbeat = setInterval(() => store.config.heartbeat(token), 60_000);
 		heartbeat.unref();
 		const started = Date.now();
@@ -589,7 +583,7 @@ export function createEngine(deps: EngineDeps) {
 				});
 				approvalAudit(approval, { correlationId: approval.id, eventType: "proposed", outcome: "info", trigger: opts.trigger, actor, runLogId, reason: c.reason });
 				if (immediate) await executeQueued([approval], opts.trigger);
-				else details.push(detail(c, "pending_approval"));
+				else details.push(detail(c, "pending"));
 			}
 
 			// Previews never move the schedule; real and scheduled runs (even dry ones) do.

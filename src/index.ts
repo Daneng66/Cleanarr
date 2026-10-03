@@ -14,7 +14,7 @@ const cfg = loadConfig();
 const log = pino({ level: cfg.logLevel });
 const db = openDb(join(cfg.dataDir, "cleanarr.db"));
 const store = createStore(db, createEncryptor(resolveSecret(cfg.dataDir, cfg.secretKey)));
-const engine = createEngine({ store, log, ...createProviders(db) });
+const engine = createEngine({ store, log, ...createProviders() });
 
 let version = "dev";
 try {
