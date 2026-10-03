@@ -115,11 +115,6 @@ export function missingItems(items: LibraryItem[]): MissingRow[] {
 		.map((i) => ({ instanceId: i.instanceId, arrItemId: i.arrId, itemType: i.kind, title: i.title, year: i.year, poster: i.poster, monitored: i.monitored, added: i.added ? i.added.toISOString() : null, certification: i.certification }));
 }
 
-/** Sonarr status meaning "finished, won't get new episodes". Cleanarr never fully deletes a series in any other status. */
-function seriesNotFinished(item: LibraryItem): boolean {
-	return item.kind === "series" && item.status !== "ended" && item.status !== "deleted";
-}
-
 export function createEngine(deps: EngineDeps) {
 	const { store, log } = deps;
 	const now = deps.now ?? (() => new Date());
@@ -336,9 +331,7 @@ export function createEngine(deps: EngineDeps) {
 				const r = evaluateExpression(expr, item, snap.ctx);
 				if (r.state !== "true") continue;
 				if (protectedBy) skipped.push(detail(fake(rule, r.reason), "skipped", protectedBy));
-				else if (rule.action === "delete" && seriesNotFinished(item)) {
-					skipped.push(detail(fake(rule, r.reason), "skipped", `Series is "${item.status ?? "unknown"}" (not ended); Cleanarr never fully deletes a series that may still get new episodes`));
-				} else candidates.push({ item, rule, reason: r.reason });
+				else candidates.push({ item, rule, reason: r.reason });
 				break;
 			}
 		}
@@ -376,7 +369,7 @@ export function createEngine(deps: EngineDeps) {
 	}
 
 	// ── Mutation boundary ──────────────────────────────────────────────────
-	type Revalidated = { ok: true; item: LibraryItem; api: ArrApi } | { ok: false; kind: "gone" | "blocked"; message: string };
+	type Revalidated = { ok: true; item: LibraryItem; api: ArrApi } | { ok: false; kind: "gone" | "blocked" | "protected"; message: string };
 
 	/**
 	 * Last check before any upstream write: re-read the live item, confirm it is still the
@@ -418,10 +411,7 @@ export function createEngine(deps: EngineDeps) {
 				live.fileCount !== s.fileCount || (s.fileIds && JSON.stringify(live.fileIds) !== JSON.stringify(s.fileIds)) ? "files changed" : null;
 			if (mismatch) return { ok: false, kind: "blocked", message: `Item changed since it was selected (${mismatch})` };
 		}
-		if (store.protected.targetKeys().has(targetKey(item))) return { ok: false, kind: "blocked", message: "Manually protected" };
-		if (rule?.action === "delete" && seriesNotFinished(item)) {
-			return { ok: false, kind: "blocked", message: `Series is "${item.status ?? "unknown"}" (not ended); Cleanarr never fully deletes a series that may still get new episodes` };
-		}
+		if (store.protected.targetKeys().has(targetKey(item))) return { ok: false, kind: "protected", message: "Manually protected" };
 
 		const ctx: EvalContext = { now: now(), watch: ev.watch, seerr: ev.seerr };
 		const overridden = store.protected.targetKeys(true).has(targetKey(item));
@@ -440,7 +430,7 @@ export function createEngine(deps: EngineDeps) {
 		return { ok: true, item, api };
 	}
 
-	async function mutate(api: ArrApi, item: LibraryItem, action: CleanupAction): Promise<Outcome> {
+	async function mutate(api: ArrApi, item: Pick<LibraryItem, "arrId" | "season">, action: CleanupAction): Promise<Outcome> {
 		if (action === "delete") {
 			await api.deleteItem(item.arrId, { deleteFiles: true });
 			return "removed";
@@ -483,37 +473,36 @@ export function createEngine(deps: EngineDeps) {
 		const a0 = store.approvals.get(id);
 		if (!a0) throw new ConflictError("Approval not found");
 		if (store.config.get().dryRun) throw new DryRunError();
-		const trigger = opts.trigger ?? (a0.status === "retry_pending" ? "retry" : "approval");
-		const retry = a0.status === "retry_pending";
+		const trigger = opts.trigger ?? (a0.status === "failed" ? "retry" : "approval");
 		const token = randomUUID();
-		if (!store.approvals.transition(id, ["pending", "retry_pending"], retry ? "retry_executing" : "executing", { token, reviewed: !retry, bumpAttempt: true })) {
+		if (!store.approvals.claim(id, token)) {
 			throw new ConflictError(`Approval is ${store.approvals.get(id)?.status}; it can no longer be approved`);
 		}
 		const a = store.approvals.get(id) as ApprovalRow;
 		const base = { correlationId: a.id, trigger, actor: opts.actor, runLogId: opts.runLogId };
-		approvalAudit(a, { ...base, eventType: retry ? "retry_started" : "approved", outcome: "info", reason: a.reason });
-		const done = (to: "executed" | "blocked" | "retry_pending", error?: string) => {
-			store.approvals.transition(id, ["executing", "retry_executing"], to, { executed: to === "executed", error });
-		};
+		const done = (to: "reclaimed" | "failed", error?: string) => store.approvals.finish(id, to, error);
 		try {
 			const v = await revalidate({ instanceId: a.instanceId, arrItemId: a.arrItemId, seasonNumber: a.seasonNumber, ruleId: a.ruleId, snapshot: a.safetySnapshot, requireRule: true });
 			if (!v.ok) {
 				if (v.kind === "gone") {
-					done("executed", "Already removed before execution; no mutation performed");
+					done("reclaimed", "Already removed before execution; no mutation performed");
 					approvalAudit(a, { ...base, eventType: "reconciled", outcome: "info", reason: v.message });
+				} else if (v.kind === "protected") {
+					store.approvals.delete(id);
+					approvalAudit(a, { ...base, eventType: "dequeued", outcome: "info", reason: v.message });
 				} else {
-					done("blocked", v.message);
-					approvalAudit(a, { ...base, eventType: "blocked", outcome: "blocked", reason: v.message });
+					done("failed", v.message);
+					approvalAudit(a, { ...base, eventType: "failed", outcome: "failed", reason: v.message });
 				}
-				return store.approvals.get(id) as ApprovalRow;
+				return store.approvals.get(id) ?? { ...a, status: "failed", lastError: v.message };
 			}
 			await mutate(v.api, v.item, a.action);
 			if (a.action === "delete") await clearSeerr(v.item);
-			done("executed");
-			approvalAudit(a, { ...base, eventType: "executed", outcome: "success", reason: a.reason, details: { sizeOnDisk: a.sizeOnDisk } });
+			done("reclaimed");
+			approvalAudit(a, { ...base, eventType: "reclaimed", outcome: "success", reason: a.reason, details: { sizeOnDisk: a.sizeOnDisk } });
 		} catch (e) {
 			const message = (e as Error).message;
-			done("retry_pending", message);
+			done("failed", message);
 			approvalAudit(a, { ...base, eventType: "failed", outcome: "failed", reason: message });
 			log.error({ approval: id, err: message }, "approval execution failed");
 		}
@@ -555,12 +544,13 @@ export function createEngine(deps: EngineDeps) {
 				if (budget <= 0) break;
 				budget--;
 				const r = await approve(a.id, { actor, trigger, runLogId });
-				const outcome: Outcome = r.status === "executed" ? (r.action === "unmonitor" ? "unmonitored" : r.action === "delete_files" || r.action === "delete_season" ? "files_deleted" : "removed") : r.status === "blocked" ? "blocked" : "failed";
+				const outcome: Outcome = !store.approvals.get(r.id) ? "skipped" : r.status === "reclaimed" ? (r.action === "unmonitor" ? "unmonitored" : r.action === "delete_files" || r.action === "delete_season" ? "files_deleted" : "removed") : "failed";
 				details.push({ instanceId: r.instanceId, arrItemId: r.arrItemId, itemType: r.itemType, ...(r.seasonNumber != null ? { seasonNumber: r.seasonNumber } : {}), title: r.title, ruleId: r.ruleId, ruleName: r.ruleName, action: r.action, reason: r.reason, sizeOnDisk: r.sizeOnDisk, outcome, message: r.lastError ?? undefined });
 				tally(outcome, r.sizeOnDisk);
 			}
 		}
 		try {
+			store.audit.prune(config.auditRetentionDays);
 			store.approvals.recoverStuck(LEASE_STALE_MS);
 
 			const { rules, needs, warnings: ruleWarnings } = activeRules();
@@ -578,9 +568,8 @@ export function createEngine(deps: EngineDeps) {
 
 			const immediate = opts.immediate === true;
 			if (!dryRun && !only) {
-				// Oldest-due queue items first (or, when immediate, the whole queue regardless of wait), then items that failed a previous attempt.
+				// Oldest-due queue items first (or, when immediate, the whole queue regardless of wait); failed items are retried every run.
 				await executeQueued(store.approvals.due(budget, immediate), "queue");
-				await executeQueued(store.approvals.retryable(budget), "retry");
 			}
 
 			for (const c of ordered) {
@@ -704,6 +693,61 @@ export function createEngine(deps: EngineDeps) {
 		};
 	}
 
+	// ── Library browser ───────────────────────────────────────────────────
+	/** Every movie and series, optionally narrowed by a rule-style filter (expression + scope). Only a definite "true" matches. */
+	async function library(filter: { expression?: unknown; serviceFilter?: Array<"sonarr" | "radarr"> | null; instanceFilter?: string[] | null; excludeTags?: string[] | null; excludeTitles?: string[] | null }) {
+		const expr = filter.expression ? parseExpression(filter.expression) : null;
+		const snap = await loadSnapshot({ ...(expr ? requirements(expr) : { files: false, watch: false, seerr: false }), seasons: false });
+		const scope = { serviceFilter: filter.serviceFilter ?? null, instanceFilter: filter.instanceFilter ?? null, excludeTags: filter.excludeTags ?? null, excludeTitles: filter.excludeTitles ?? null } as RuleRecord;
+		const prot = new Map(store.protected.list().filter((p) => !p.ignoreRetention).map((p) => [`${p.instanceId}:${p.itemType}:${p.arrItemId}`, p.id]));
+		const items = snap.items.filter((i) => !snap.failedInstances.has(i.instanceId) && passesFilters(i, scope).ok && (!expr || evaluateExpression(expr, i, snap.ctx).state === "true"));
+		return {
+			warnings: snap.warnings,
+			total: snap.items.length,
+			items: items.map((i) => ({
+				instanceId: i.instanceId, service: i.service, arrItemId: i.arrId, itemType: i.kind as "movie" | "series", title: i.title, year: i.year, poster: i.poster,
+				sizeOnDisk: i.sizeOnDisk, monitored: i.monitored, hasFile: i.hasFile, status: i.status, added: i.added ? i.added.toISOString() : null, certification: i.certification,
+				genres: i.genres, tags: i.tags, qualityProfile: i.qualityProfileName, rating: i.rating, runtime: i.runtime, path: i.path, fileCount: i.fileCount,
+				protectedId: prot.get(`${i.instanceId}:${i.kind}:${i.arrId}`) ?? null,
+			})),
+		};
+	}
+
+	/** Operator-initiated removal of specific titles. Manually protected titles are refused; each result is audited. */
+	async function removeItems(targets: Array<{ instanceId: string; arrItemId: number }>, action: CleanupAction, actor = "operator") {
+		const correlationId = randomUUID();
+		const protectedKeys = store.protected.targetKeys();
+		return mapLimit(targets, FILE_FETCH_CONCURRENCY, async (t) => {
+			const result = (status: "done" | "blocked" | "failed" | "gone", message?: string) => ({ ...t, status, message });
+			const inst = store.instances.get(t.instanceId);
+			if (!inst || !inst.enabled || (inst.type !== "sonarr" && inst.type !== "radarr")) return result("blocked", "Instance is missing or disabled");
+			const api = deps.arr(inst);
+			let item: LibraryItem | null = null;
+			try {
+				try {
+					item = normalizeItem(await api.get(t.arrItemId), { instanceId: inst.id, service: api.service, ...(await loadMaps(api)) });
+				} catch (e) {
+					if ((e as { status?: number }).status === 404) return result("gone", "Already removed");
+					throw e;
+				}
+				const ev = { correlationId, trigger: "manual" as const, actor, action: action };
+				if (protectedKeys.has(targetKey(item))) {
+					audit({ instance: inst.id, arrId: item.arrId, kind: item.kind, title: item.title }, { ...ev, eventType: "manual_blocked", outcome: "blocked", reason: "Manually protected" });
+					return result("blocked", "Manually protected");
+				}
+				await mutate(api, item, action);
+				if (action === "delete") await clearSeerr(item);
+				audit({ instance: inst.id, arrId: item.arrId, kind: item.kind, title: item.title }, { ...ev, eventType: "manual_removed", outcome: "success", reason: "Removed from the Library page", details: { sizeOnDisk: item.sizeOnDisk } });
+				return result("done");
+			} catch (e) {
+				const message = (e as Error).message;
+				if (item) audit({ instance: inst.id, arrId: item.arrId, kind: item.kind, title: item.title }, { correlationId, trigger: "manual", actor, action, eventType: "manual_failed", outcome: "failed", reason: message });
+				log.error({ instance: inst.name, item: t.arrItemId, err: message }, "manual removal failed");
+				return result("failed", message);
+			}
+		});
+	}
+
 	// ── External links ────────────────────────────────────────────────────
 	/** Deep link into the Sonarr/Radarr web UI, which routes by title slug rather than the internal id. */
 	async function externalLink(instanceId: string, arrItemId: number): Promise<{ url: string }> {
@@ -738,7 +782,7 @@ export function createEngine(deps: EngineDeps) {
 		}));
 	}
 
-	return { run, preview, explain, approve, snapshotOf, episodesOnDisk, externalLink, MAX_ATTEMPTS };
+	return { run, preview, library, removeItems, explain, approve, snapshotOf, episodesOnDisk, externalLink, MAX_ATTEMPTS };
 }
 
 export type Engine = ReturnType<typeof createEngine>;

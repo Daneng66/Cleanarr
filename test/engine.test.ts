@@ -36,6 +36,21 @@ describe("dry run", () => {
 	});
 });
 
+describe("audit retention", () => {
+	it("prunes audit events older than config.auditRetentionDays on every run", async () => {
+		const s = setup({ radarr: [movie(1)] });
+		live(s, { auditRetentionDays: 7 });
+		s.store.audit.append({ correlationId: "c1", eventType: "proposed", outcome: "info", trigger: "manual", actor: "test", instanceId: s.radarr.id, arrItemId: 1, itemType: "movie", title: "Old", action: "delete", reason: "r" });
+		expect(s.store.audit.list()).toHaveLength(1);
+		s.clock.now = new Date(s.clock.now.getTime() + 8 * DAY);
+		s.store.audit.append({ correlationId: "c2", eventType: "proposed", outcome: "info", trigger: "manual", actor: "test", instanceId: s.radarr.id, arrItemId: 1, itemType: "movie", title: "Recent", action: "delete", reason: "r" });
+		await s.engine.run({ trigger: "manual", forceDryRun: true });
+		const remaining = s.store.audit.list();
+		expect(remaining).toHaveLength(1);
+		expect(remaining[0].title).toBe("Recent");
+	});
+});
+
 describe("queue execution", () => {
 	it("queues matching items, then removes them once run now, recording bytes reclaimed + audit trail", async () => {
 		const s = setup({ radarr: [movie(1), movie(2, { added: new Date(NOW.getTime() - 5 * DAY).toISOString() })] });
@@ -47,7 +62,7 @@ describe("queue execution", () => {
 		expect(s.radarrApi.calls).toEqual(["delete:1:true"]);
 		expect(s.store.logs.stats().bytes).toBe(10 * GB);
 		const types = s.store.audit.list().map((e) => e.event_type).reverse();
-		expect(types).toEqual(["proposed", "approved", "executed"]);
+		expect(types).toEqual(["proposed", "reclaimed"]);
 	});
 	it("honours maxRemovalsPerRun and defers the rest when queueing", async () => {
 		const s = setup({ radarr: [movie(1), movie(2), movie(3)] });
@@ -84,7 +99,7 @@ describe("queue execution", () => {
 		s.clock.now = new Date(NOW.getTime() + 25 * 3_600_000);
 		const log = await s.engine.run({ trigger: "manual" });
 		expect(log?.itemsRemoved).toBe(2);
-		expect(s.store.approvals.list("executed")).toHaveLength(2);
+		expect(s.store.approvals.list("reclaimed")).toHaveLength(2);
 	});
 	it("immediate: true executes new matches right away, ignoring queueDelayDays", async () => {
 		const s = setup({ radarr: [movie(1), movie(2)] });
@@ -159,19 +174,18 @@ describe("safety", () => {
 		const [a] = s.store.approvals.list("pending");
 		s.store.protected.create({ instanceId: s.radarr.id, arrItemId: 1, itemType: "movie", title: "Movie 1" });
 		const r = await s.engine.approve(a!.id, { actor: "me" });
-		expect(r.status).toBe("blocked");
+		expect(r.status).toBe("failed");
 		expect(r.lastError).toBe("Manually protected");
+		expect(s.store.approvals.get(a!.id)).toBeUndefined();
 		expect(s.radarrApi.calls).toEqual([]);
 	});
-	it("never fully deletes a series that hasn't ended", async () => {
+	it("allows fully deleting a series that hasn't ended when a delete rule matches", async () => {
 		const s = setup({ radarr: [], sonarr: [series(1, { status: "continuing" })] });
 		live(s);
 		s.rule("old", old(100));
-		const log = await s.engine.run({ trigger: "manual" });
-		expect(s.sonarrApi!.calls).toEqual([]);
-		expect(log?.details[0]?.message).toMatch(/Series is "continuing"/);
-		const p = await s.engine.preview();
-		expect(p.candidates).toHaveLength(0);
+		await s.engine.run({ trigger: "manual" });
+		await approveAll(s);
+		expect(s.sonarrApi!.calls).toEqual(["delete:1:true"]);
 	});
 	it("still allows unmonitor or delete_files on a series that hasn't ended", async () => {
 		const s = setup({ radarr: [], sonarr: [series(1, { status: "continuing" })] });
@@ -215,7 +229,7 @@ describe("safety", () => {
 		s.radarrApi.get = async (id) => ({ ...(await get(id)), sizeOnDisk: 99 * GB });
 		const r = await s.engine.approve(a!.id, { actor: "me" });
 		expect(s.radarrApi.calls).toEqual([]);
-		expect(r.status).toBe("blocked");
+		expect(r.status).toBe("failed");
 		expect(r.lastError).toMatch(/size on disk changed/);
 	});
 	it("re-runs retention rules on fresh data at the mutation boundary", async () => {
@@ -227,7 +241,7 @@ describe("safety", () => {
 		// A protective rule added after the proposal must stop the deletion.
 		s.rule("late retention", { type: "monitored", params: {} }, { mode: "retention" });
 		const r = await s.engine.approve(a!.id, { actor: "me" });
-		expect(r.status).toBe("blocked");
+		expect(r.status).toBe("failed");
 		expect(r.lastError).toMatch(/Retention rule "late retention" now protects/);
 		expect(s.radarrApi.calls).toEqual([]);
 	});
@@ -239,7 +253,7 @@ describe("safety", () => {
 		const [a] = s.store.approvals.list("pending");
 		s.clock.now = new Date(NOW.getTime() - 300 * DAY); // item is now "younger" than 100 days
 		const r = await s.engine.approve(a!.id, { actor: "me" });
-		expect(r.status).toBe("blocked");
+		expect(r.status).toBe("failed");
 		expect(r.lastError).toMatch(/no longer matches/);
 	});
 	it("Sonarr: snapshot works without file-metadata rules and detects new episodes", async () => {
@@ -294,7 +308,7 @@ describe("approval workflow", () => {
 		const [r1, r2] = await Promise.allSettled([s.engine.approve(a!.id, { actor: "me" }), s.engine.approve(a!.id, { actor: "me" })]);
 		expect([r1.status, r2.status].sort()).toEqual(["fulfilled", "rejected"]);
 		expect(s.radarrApi.calls.filter((c) => c.startsWith("delete:"))).toHaveLength(1);
-		expect(s.store.approvals.get(a!.id)?.status).toBe("executed");
+		expect(s.store.approvals.get(a!.id)?.status).toBe("reclaimed");
 	});
 	it("blocks an approval whose item has changed since it was proposed", async () => {
 		const s = approvalSetup();
@@ -302,7 +316,7 @@ describe("approval workflow", () => {
 		const [a] = s.store.approvals.list("pending");
 		s.radarrApi.items.get(a!.arrItemId)!.path = "/movies/moved";
 		const r = await s.engine.approve(a!.id, { actor: "me" });
-		expect(r.status).toBe("blocked");
+		expect(r.status).toBe("failed");
 		expect(r.lastError).toMatch(/path changed/);
 		expect(s.radarrApi.calls).toEqual([]);
 	});
@@ -319,19 +333,19 @@ describe("approval workflow", () => {
 		const [a] = s.store.approvals.list("pending");
 		s.radarrApi.items.delete(a!.arrItemId);
 		const r = await s.engine.approve(a!.id, { actor: "me" });
-		expect(r.status).toBe("executed");
+		expect(r.status).toBe("reclaimed");
 		expect(r.lastError).toMatch(/no mutation/);
 		expect(s.radarrApi.calls).toEqual([]);
 	});
-	it("failed execution goes to retry_pending and a later run retries it", async () => {
+	it("failed execution stays failed in the queue and a later run retries it", async () => {
 		const s = approvalSetup();
 		await s.engine.run({ trigger: "manual" });
 		const [a] = s.store.approvals.list("pending");
 		s.radarrApi.failDelete = true;
-		expect((await s.engine.approve(a!.id, { actor: "me" })).status).toBe("retry_pending");
+		expect((await s.engine.approve(a!.id, { actor: "me" })).status).toBe("failed");
 		s.radarrApi.failDelete = false;
 		const log = await s.engine.run({ trigger: "manual" });
-		expect(s.store.approvals.get(a!.id)?.status).toBe("executed");
+		expect(s.store.approvals.get(a!.id)?.status).toBe("reclaimed");
 		expect(log?.itemsRemoved).toBe(1);
 	});
 	it("a queued item past its wait can still be run now manually", async () => {
@@ -340,7 +354,7 @@ describe("approval workflow", () => {
 		const [a] = s.store.approvals.list("pending");
 		s.clock.now = new Date(NOW.getTime() + 8 * DAY);
 		const r = await s.engine.approve(a!.id, { actor: "me" });
-		expect(r.status).toBe("executed");
+		expect(r.status).toBe("reclaimed");
 	});
 	it("refuses to execute approvals while in dry-run mode", async () => {
 		const s = approvalSetup();
@@ -353,10 +367,10 @@ describe("approval workflow", () => {
 		const s = approvalSetup();
 		await s.engine.run({ trigger: "manual" });
 		const [a] = s.store.approvals.list("pending");
-		s.store.approvals.transition(a!.id, ["pending"], "executing", { token: "t", reviewed: true });
+		s.store.approvals.claim(a!.id, "t");
 		s.clock.now = new Date(NOW.getTime() + DAY);
 		s.store.approvals.recoverStuck(60_000);
-		expect(s.store.approvals.get(a!.id)?.status).toBe("retry_pending");
+		expect(s.store.approvals.get(a!.id)?.status).toBe("failed");
 	});
 });
 
@@ -525,7 +539,7 @@ describe("Plex + Seerr stack", () => {
 		const insts = s.store.instances.list().find((i) => i.type === "plex")!;
 		s.store.instances.update(insts.id, { enabled: false });
 		const r = await s.engine.approve(a!.id, { actor: "me" });
-		expect(r.status).toBe("blocked");
+		expect(r.status).toBe("failed");
 		expect(s.radarrApi.calls).toEqual([]);
 	});
 });
@@ -588,7 +602,7 @@ describe("delete season", () => {
 		await s.engine.run({ trigger: "manual" });
 		expect(s.store.approvals.list("pending")).toHaveLength(1);
 		const r = await s.engine.approve(a!.id, { actor: "me" });
-		expect(r.status).toBe("executed");
+		expect(r.status).toBe("reclaimed");
 		expect(s.sonarrApi!.calls).toEqual(["delete_season:1:1"]);
 	});
 	it("season rules never act on whole series, and series rules never act on seasons", async () => {
@@ -614,5 +628,38 @@ describe("delete season", () => {
 		s.rule("keep monitored", { type: "monitored", params: {} }, { mode: "retention" });
 		await s.engine.run({ trigger: "manual" });
 		expect(s.sonarrApi!.calls).toEqual([]);
+	});
+});
+
+describe("stale unwatched episode", () => {
+	const addedOld = new Date(NOW.getTime() - 200 * DAY).toISOString();
+	const addedRecent = new Date(NOW.getTime() - 10 * DAY).toISOString();
+	const show = series(2, { seasons: [{ seasonNumber: 1, monitored: true, statistics: { sizeOnDisk: 5 * GB, episodeFileCount: 2 } }] });
+	// Air dates are both old (well past any threshold) so the fixtures prove staleness tracks dateAdded, not airDateUtc.
+	const ep = (n: number, episodeFileId: number) => ({ seasonNumber: 1, episodeNumber: n, airDateUtc: addedOld, episodeFileId, hasFile: true });
+
+	function stack(watched: number[]) {
+		const s = setup({ sonarr: [show], watch: { "season:3002:1": { lastWatchedAt: NOW, watchCount: watched.length, watchedBy: watched.length ? ["Alice"] : [], episodesByUser: new Map([["Alice", new Set(watched)]]) } } });
+		s.sonarrApi!.eps.set(2, [ep(1, 11), ep(2, 12)]);
+		s.sonarrApi!.files.set(2, [{ id: 11, seasonNumber: 1, dateAdded: addedOld }, { id: 12, seasonNumber: 1, dateAdded: addedRecent }]);
+		return s;
+	}
+
+	it("matches when an episode's file has gone unwatched past the threshold since it was added", async () => {
+		const s = stack([2]); // episode 2 watched; episode 1 was skipped and added 200 days ago
+		s.rule("stale ep", { type: "stale_unwatched_episode", params: { days: 100 } }, { action: "delete_season" });
+		const p = await s.engine.preview();
+		expect(p.candidates.map((c) => [c.itemType, c.seasonNumber])).toEqual([["season", 1]]);
+		expect(p.candidates[0]!.reason).toMatch(/episode 1 added 200 days ago and is still unwatched/);
+	});
+	it("does not match once every stale episode has been watched", async () => {
+		const s = stack([1, 2]);
+		s.rule("stale ep", { type: "stale_unwatched_episode", params: { days: 100 } }, { action: "delete_season" });
+		expect((await s.engine.preview()).candidates).toEqual([]);
+	});
+	it("does not match an unwatched episode that hasn't hit the threshold yet", async () => {
+		const s = stack([]); // nothing watched, but episode 1 (added 200 days ago) is still under a 365-day threshold
+		s.rule("stale ep", { type: "stale_unwatched_episode", params: { days: 365 } }, { action: "delete_season" });
+		expect((await s.engine.preview()).candidates).toEqual([]);
 	});
 });

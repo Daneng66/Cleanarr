@@ -47,6 +47,15 @@ export const RULE_TEMPLATES: RuleTemplate[] = [
 		serviceFilter: ["sonarr"],
 	},
 	{
+		id: "stale-episode",
+		title: "Episode left unwatched",
+		description: "A season has an episode, sitting on disk, that nobody has watched in the 90 days since it was added — even if the rest of the season was watched recently. Deletes that season's files and unmonitors it; the rest of the show stays.",
+		mode: "cleanup",
+		action: "delete_season",
+		expression: { type: "stale_unwatched_episode", params: { days: 90 } },
+		serviceFilter: ["sonarr"],
+	},
+	{
 		id: "low-rated",
 		title: "Low rated and unwatched",
 		description: "Rated below 5/10, never played, and added more than 3 months ago.",

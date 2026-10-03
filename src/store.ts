@@ -8,16 +8,7 @@ const json = (v: unknown) => (v === null || v === undefined ? null : JSON.string
 const parse = <T>(v: unknown): T | null => (typeof v === "string" ? (JSON.parse(v) as T) : null);
 const iso = (d: Date) => d.toISOString();
 
-export type ApprovalStatus =
-	| "pending"
-	| "approved"
-	| "retry_pending"
-	| "rejected"
-	| "executing"
-	| "retry_executing"
-	| "executed"
-	| "expired"
-	| "blocked";
+export type ApprovalStatus = "pending" | "failed" | "reclaimed";
 
 export interface ApprovalRow {
 	id: string;
@@ -143,6 +134,7 @@ export function createStore(db: Db, enc: Encryptor, now: () => Date = () => new 
 				dryRun: !!r.dry_run,
 				maxRemovalsPerRun: r.max_removals_per_run,
 				queueDelayDays: r.queue_delay_days,
+				auditRetentionDays: r.audit_retention_days,
 				lastRunAt: r.last_run_at,
 				nextRunAt: r.next_run_at,
 			};
@@ -157,11 +149,11 @@ export function createStore(db: Db, enc: Encryptor, now: () => Date = () => new 
 			const next = cur.lastRunAt ? nextRun(new Date(cur.lastRunAt), c) : firstRun(now(), c.runTime);
 			db.prepare(
 				`UPDATE config SET enabled=?, interval_every=?, interval_unit=?, run_time=?, dry_run=?, max_removals_per_run=?,
-				 queue_delay_days=?,
+				 queue_delay_days=?, audit_retention_days=?,
 				 next_run_at = CASE WHEN ? = 0 THEN NULL WHEN ? = 1 THEN ? WHEN ? = 1 OR next_run_at IS NULL THEN ? ELSE next_run_at END WHERE id = 1`,
 			).run(
 				c.enabled ? 1 : 0, c.intervalEvery, c.intervalUnit, c.runTime, c.dryRun ? 1 : 0, c.maxRemovalsPerRun,
-				c.queueDelayDays, enabledNow ? 1 : 0, immediate ? 1 : 0, iso(now()), rescheduled ? 1 : 0, iso(next),
+				c.queueDelayDays, c.auditRetentionDays, enabledNow ? 1 : 0, immediate ? 1 : 0, iso(now()), rescheduled ? 1 : 0, iso(next),
 			);
 			return config.get();
 		},
@@ -262,7 +254,7 @@ export function createStore(db: Db, enc: Encryptor, now: () => Date = () => new 
 
 	/** Same key the engine builds for a LibraryItem: seasons are distinct targets from their series. */
 	const targetKey = (r: any) => `${r.instance_id}:${r.item_type}:${r.arr_item_id}${r.season_number != null ? `:${r.season_number}` : ""}`;
-	const OPEN = ["pending", "approved", "retry_pending", "executing", "retry_executing"];
+	const OPEN = ["pending", "failed"];
 	const approvals = {
 		get(id: string): ApprovalRow | undefined {
 			const r = db.prepare("SELECT * FROM approvals WHERE id = ?").get(id);
@@ -299,33 +291,29 @@ export function createStore(db: Db, enc: Encryptor, now: () => Date = () => new 
 			).run(id, a.instanceId, a.arrItemId, a.seasonNumber ?? null, a.itemType, a.title, a.year, a.sizeOnDisk, a.ruleId, a.ruleName, a.reason, a.action, JSON.stringify(a.safetySnapshot), iso(a.executeAfter), iso(now()));
 			return approvals.get(id) as ApprovalRow;
 		},
-		/** Queued items whose wait has elapsed; a run executes these automatically. With ignoreDelay, returns the whole pending queue regardless of wait (used by "Reclaim now"). */
+		/** Queued items whose wait has elapsed, plus failed ones (retried every run). With ignoreDelay, the whole queue regardless of wait (used by "Reclaim now"). */
 		due(limit: number, ignoreDelay = false): ApprovalRow[] {
-			if (ignoreDelay) return db.prepare("SELECT * FROM approvals WHERE status = 'pending' ORDER BY execute_after LIMIT ?").all(limit).map(approvalRow);
-			return db.prepare("SELECT * FROM approvals WHERE status = 'pending' AND execute_after <= ? ORDER BY execute_after LIMIT ?").all(iso(now()), limit).map(approvalRow);
+			return db
+				.prepare(`SELECT * FROM approvals WHERE status = 'failed' OR (status = 'pending' AND (? OR execute_after <= ?)) ORDER BY execute_after LIMIT ?`)
+				.all(ignoreDelay ? 1 : 0, iso(now()), limit)
+				.map(approvalRow);
 		},
-		/** Compare-and-set status transition. Returns true only for the caller that won. */
-		transition(id: string, from: ApprovalStatus[], to: ApprovalStatus, extra: { token?: string | null; error?: string | null; reviewed?: boolean; executed?: boolean; bumpAttempt?: boolean } = {}): boolean {
-			const r = db
-				.prepare(
-					`UPDATE approvals SET status = ?, execution_token = ?, last_error = COALESCE(?, last_error),
-					 reviewed_at = CASE WHEN ? THEN ? ELSE reviewed_at END,
-					 executed_at = CASE WHEN ? THEN ? ELSE executed_at END,
-					 attempt_count = attempt_count + ?
-					 WHERE id = ? AND status IN (${from.map(() => "?").join(",")})`,
-				)
-				.run(to, extra.token ?? null, extra.error ?? null, extra.reviewed ? 1 : 0, iso(now()), extra.executed ? 1 : 0, iso(now()), extra.bumpAttempt ? 1 : 0, id, ...from);
-			return r.changes === 1;
+		delete(id: string) {
+			db.prepare("DELETE FROM approvals WHERE id = ?").run(id);
 		},
-		/** Executions that were mid-flight when the process died. They are retried, never assumed done. */
+		/** Compare-and-set claim: the execution token marks work in flight. Returns true only for the caller that won. */
+		claim(id: string, token: string): boolean {
+			return db.prepare("UPDATE approvals SET execution_token = ?, reviewed_at = ?, attempt_count = attempt_count + 1 WHERE id = ? AND status IN ('pending','failed') AND execution_token IS NULL").run(token, iso(now()), id).changes === 1;
+		},
+		finish(id: string, to: "reclaimed" | "failed", error?: string | null) {
+			db.prepare("UPDATE approvals SET status = ?, execution_token = NULL, last_error = COALESCE(?, last_error), executed_at = CASE WHEN ? = 'reclaimed' THEN ? ELSE executed_at END WHERE id = ?").run(to, error ?? null, to, iso(now()), id);
+		},
+		/** Executions that were mid-flight when the process died. They are marked failed so they get retried, never assumed done. */
 		recoverStuck(olderThanMs: number): number {
 			const cutoff = iso(new Date(now().getTime() - olderThanMs));
 			return db
-				.prepare("UPDATE approvals SET status='retry_pending', execution_token=NULL, last_error='Interrupted before completion; verify and retry' WHERE status IN ('executing','retry_executing') AND COALESCE(reviewed_at, created_at) < ?")
+				.prepare("UPDATE approvals SET status='failed', execution_token=NULL, last_error='Interrupted before completion; verify and retry' WHERE execution_token IS NOT NULL AND COALESCE(reviewed_at, created_at) < ?")
 				.run(cutoff).changes;
-		},
-		retryable(limit: number): ApprovalRow[] {
-			return db.prepare("SELECT * FROM approvals WHERE status IN ('retry_pending') AND attempt_count < 3 ORDER BY created_at LIMIT ?").all(limit).map(approvalRow);
 		},
 	};
 
@@ -385,7 +373,7 @@ export function createStore(db: Db, enc: Encryptor, now: () => Date = () => new 
 			const r = db
 				.prepare(
 					`SELECT COUNT(*) removed, COALESCE(SUM(json_extract(details,'$.sizeOnDisk')),0) bytes FROM audit_events
-					 WHERE event_type='executed' AND outcome='success' AND action IN ('delete','delete_files')`,
+					 WHERE event_type='reclaimed' AND outcome='success' AND action IN ('delete','delete_files')`,
 				)
 				.get() as { removed: number; bytes: number };
 			return { runs: (db.prepare("SELECT COUNT(*) n FROM run_logs WHERE is_dry_run = 0").get() as { n: number }).n, ...r };
@@ -415,6 +403,8 @@ export function createStore(db: Db, enc: Encryptor, now: () => Date = () => new 
 				.all(...args, opts.limit ?? 100, opts.offset ?? 0) as any[];
 			return rows.map((r) => ({ ...r, details: parse<unknown>(r.details) }));
 		},
+		/** Drops entries older than `days`. Called once per run so the trail doesn't grow forever. */
+		prune: (days: number) => db.prepare("DELETE FROM audit_events WHERE created_at < ?").run(iso(new Date(now().getTime() - days * 86_400_000))).changes,
 	};
 
 	return { instances, config, rules, approvals, protected: protectedItems, logs, audit };

@@ -53,10 +53,10 @@ const iconBtn = (name, label, onclick, cls = "") => h("button", { type: "button"
 // mark, label, tone (tone defaults to the mark)
 const STATES = {
 	flagged: ["flagged", "Flagged"], matches: ["flagged", "Matches"],
-	pending: ["queued", "Queued"], pending_approval: ["queued", "Queued"], retry_pending: ["queued", "Retry pending"], approved: ["queued", "Running soon"], executing: ["queued", "Executing"], retry_executing: ["queued", "Retrying"], running: ["queued", "Running"],
-	executed: ["ejected", "Executed"], removed: ["ejected", "Removed"], files_deleted: ["ejected", "Files deleted"], unmonitored: ["ejected", "Unmonitored"],
+	pending: ["queued", "Queued"], pending_approval: ["queued", "Queued"], failed: ["queued", "Failed"], running: ["queued", "Running"],
+	reclaimed: ["ejected", "Reclaimed"], removed: ["ejected", "Removed"], files_deleted: ["ejected", "Files deleted"], unmonitored: ["ejected", "Unmonitored"],
 	completed: ["loaded", "Completed", "ok"], success: ["loaded", "Success", "ok"], protected: ["protected", "Protected"],
-	expired: ["loaded", "Expired"], skipped: ["loaded", "Skipped"], no_match: ["loaded", "No match"], out_of_scope: ["loaded", "Out of scope"],
+	skipped: ["loaded", "Skipped"], no_match: ["loaded", "No match"], out_of_scope: ["loaded", "Out of scope"],
 	partial: ["unknown", "Partial"], unknown: ["unknown", "Unknown"],
 	blocked: ["fault", "Blocked"], failed: ["fault", "Failed"], error: ["fault", "Error"],
 };
@@ -167,12 +167,12 @@ const sum = (rows) => rows.filter(frees).reduce((n, r) => n + (r.sizeOnDisk || 0
 const uid = () => `f${Math.random().toString(36).slice(2, 9)}`;
 
 // ── Router ─────────────────────────────────────────────────────────────────
-const routes = { dashboard: renderDashboard, rules: renderRules, history: renderHistory, instances: renderInstances, settings: renderSettings, missing: renderMissing, protected: renderProtected };
-const titles = { dashboard: "Dashboard", rules: "Rules", history: "History", instances: "Instances", settings: "Settings", missing: "Missing files", protected: "Protected" };
+const routes = { dashboard: renderDashboard, library: renderLibrary, rules: renderRules, history: renderHistory, instances: renderInstances, settings: renderSettings, missing: renderMissing, protected: renderProtected };
+const titles = { dashboard: "Dashboard", library: "Library", rules: "Rules", history: "History", instances: "Instances", settings: "Settings", missing: "Missing files", protected: "Protected" };
 const subPages = ["missing", "protected"]; // reached from the dashboard Library panel, not the nav
 let current = "dashboard", waiting = 0, routeSeq = 0;
 function paintNav() {
-	$("#nav").replaceChildren(...Object.entries(titles).filter(([k]) => !subPages.includes(k)).map(([k, v]) => h("a", { href: `#/${k}`, class: k === current || (k === "dashboard" && subPages.includes(current)) ? "active" : "", "aria-current": k === current ? "page" : null }, v, k === "dashboard" && waiting ? h("span", { class: "count", "aria-label": `${waiting} in queue` }, waiting) : null)));
+	$("#nav").replaceChildren(...Object.entries(titles).filter(([k]) => !subPages.includes(k)).map(([k, v]) => h("a", { href: `#/${k}`, class: k === current || (k === "dashboard" && subPages.includes(current)) ? "active" : "", "aria-current": k === current ? "page" : null }, v, k === "dashboard" && waiting ? h("span", { class: "count", "aria-label": `${waiting} on the dashboard` }, waiting) : null)));
 }
 async function route() {
 	const seq = ++routeSeq;
@@ -191,8 +191,6 @@ async function refreshMode() {
 		const m = $("#mode");
 		const [cls, txt] = s.config.dryRun ? ["dry", "Dry run"] : ["live", `Live · ${s.config.queueDelayDays}d queue`];
 		m.className = `mode ${cls}`; m.querySelector(".txt").textContent = txt;
-		const n = (s.approvals.pending || 0) + (s.approvals.retry_pending || 0);
-		if (n !== waiting) { waiting = n; paintNav(); }
 	} catch {}
 }
 window.addEventListener("hashchange", route);
@@ -246,13 +244,18 @@ async function renderDashboard() {
 	function paint(p) {
 		const flagged = p.candidates, reclaim = sum(flagged), ruleCount = new Set(flagged.map((c) => c.ruleId)).size;
 		const queuedCount = flagged.filter((c) => c.queue).length;
+		const openHere = flagged.filter((c) => c.queue && c.queue.status !== "reclaimed").length;
+		const totalOpen = (s.approvals.pending || 0) + (s.approvals.failed || 0);
+		const orphaned = Math.max(0, totalOpen - openHere);
+		if (flagged.length !== waiting) { waiting = flagged.length; paintNav(); }
 		const nw = (t) => h("span", { class: "nw" }, t);
 		const facts = flagged.length
-			? [nw(`${plural(flagged.length, "title")} flagged by ${plural(ruleCount, "rule")}`), " · ", nw(`${plural(p.evaluated, "title")} evaluated`), queuedCount ? [" · ", nw(`${plural(queuedCount, "title")} already queued`)] : null]
+			? [nw(`${plural(flagged.length, "title")} flagged by ${plural(ruleCount, "rule")}`), " · ", nw(`${plural(p.evaluated, "title")} evaluated`), queuedCount ? [" · ", nw(`${plural(queuedCount, "title")} already queued`)] : null,
+				orphaned ? [" · ", nw(`${plural(orphaned, "queued removal")} no longer match${orphaned === 1 ? "es" : ""}`)] : null]
 			: `${plural(p.evaluated, "title")} evaluated. Your rules match nothing right now.`;
 		head.replaceChildren(readout(reclaim, "reclaimable by your rules", facts, acts));
 		warn.replaceChildren(...(p.warnings.length ? [h("div", { class: "notices", style: "margin-top:16px" }, ...p.warnings.map((w) => notice(w)))] : []));
-		strip.replaceChildren(flagged.length ? posterGrid(flagged, s.config) : posterState("empty clear", "Shelf is clear", `No title matches a cleanup rule.${waiting ? ` ${plural(waiting, "queued removal")} no longer match${waiting === 1 ? "es" : ""} and will be re-checked before running.` : " Loosen a rule or check back after more is added."}`, h("a", { class: "btn", href: "#/rules" }, "Review rules")));
+		strip.replaceChildren(flagged.length ? posterGrid(flagged, s.config) : posterState("empty clear", "Shelf is clear", `No title matches a cleanup rule.${orphaned ? ` ${plural(orphaned, "queued removal")} no longer match${orphaned === 1 ? "es" : ""} and will be re-checked before running.` : " Loosen a rule or check back after more is added."}`, h("a", { class: "btn", href: "#/rules" }, "Review rules")));
 		drivers.replaceChildren(flagged.length ? driversPanel(flagged) : "");
 		lib.replaceChildren(libraryPanel(p.library, p.skipped.filter((d) => skipCategory(d)[0] === "protected"), p.missing));
 	}
@@ -303,7 +306,7 @@ function etaText(cfg) {
 function countdownBadge(c, cfg) {
 	const q = c.queue;
 	if (q) {
-		if (q.status === "retry_pending") return "Retry";
+		if (q.status === "failed") return "Retry";
 		const d = daysUntil(new Date(q.executeAfter).getTime());
 		return d === 0 ? "Due" : `${d}d`;
 	}
@@ -348,13 +351,13 @@ function posterCard(c, cfg) {
 function queueStatus(c, cfg) {
 	const q = c.queue;
 	if (!q) { const eta = etaText(cfg); return eta ? h("div", { class: "queue-status" }, state("pending", eta)) : null; }
-	const badge = q.status === "retry_pending" ? state("retry_pending", "Retry pending") : state("pending", `Queued · removes ${ago(q.executeAfter)}`);
+	const badge = q.status === "failed" ? state("failed", "Failed, retrying next run") : state("pending", `Queued · removes ${ago(q.executeAfter)}`);
 	return h("div", { class: "queue-status" }, badge, q.lastError ? h("div", { class: "help" }, q.lastError) : null);
 }
 /** Reclaim this one title now. Queued items go through their approval; unqueued ones through a single-title run. */
 function queueActs(c) {
 	const q = c.queue;
-	if (q && q.status !== "pending" && q.status !== "retry_pending") return null;
+	if (q && q.status === "reclaimed") return null;
 	const label = ACTION_LABEL[c.action] || "Run";
 	return [h("button", { type: "button", class: "small danger", onclick: (e) => guard(e.currentTarget, async () => {
 		const title = c.action === "delete_files" ? `Delete files for “${nameOf(c)}” now?` : `${label} “${nameOf(c)}” now?`;
@@ -365,7 +368,7 @@ function queueActs(c) {
 		try {
 			const r = q ? await api(`/approvals/${q.id}/approve`, { method: "POST" })
 				: await api("/run", { method: "POST", body: { immediate: true, only: { instanceId: c.instanceId, arrItemId: c.arrItemId, seasonNumber: c.seasonNumber ?? null } } });
-			const done = q ? r.status === "executed" : r.itemsRemoved + r.itemsUnmonitored + r.itemsFilesDeleted > 0;
+			const done = q ? r.status === "reclaimed" : r.itemsRemoved + r.itemsUnmonitored + r.itemsFilesDeleted > 0;
 			if (done && lastPreview && repaintDashboard) {
 				lastPreview.data.candidates = lastPreview.data.candidates.filter((x) => x !== c);
 				toast("Reclaimed"); repaintDashboard();
@@ -542,7 +545,7 @@ function lastRunPanel(r) {
 const SKIP_ORDER = ["protected", "skipped"];
 function skipCategory(d) {
 	const m = d.message || "";
-	if (m.startsWith("Protected by retention rule") || m.startsWith("Retention rule") || m === "Manually protected" || m.startsWith("Series is ")) return ["protected", "Protected"];
+	if (m.startsWith("Protected by retention rule") || m.startsWith("Retention rule") || m === "Manually protected") return ["protected", "Protected"];
 	return ["skipped", "Skipped"];
 }
 /** Button that flips between Unprotect and Protect; dims its card while the item is unprotected. */
@@ -617,6 +620,116 @@ function explainBody(e) {
 		e.rules.map((r) => h("div", { class: "verdict" }, h("div", { class: "row" }, h("strong", {}, r.name), r.mode === "retention" ? protectTag() : actionTag(r.action), h("span", { class: "grow" }), verdict(r)), r.excludedBy ? h("div", { class: "help" }, r.excludedBy) : null, r.tree ? h("ul", { class: "tree" }, tree(r.tree)) : null)));
 }
 
+// ── Library ────────────────────────────────────────────────────────────────
+const LIB_PAGE = 60;
+const SORTS = { title: ["Title", (a, b) => a.title.localeCompare(b.title)], size: ["Size", (a, b) => b.sizeOnDisk - a.sizeOnDisk], added: ["Date added", (a, b) => (b.added || "").localeCompare(a.added || "")], year: ["Year", (a, b) => (b.year || 0) - (a.year || 0)], rating: ["Rating", (a, b) => (b.rating || 0) - (a.rating || 0)] };
+const libKey = (d) => `${d.instanceId}:${d.arrItemId}`;
+async function setProtected(d, on) {
+	if (on && !d.protectedId) d.protectedId = (await api("/protected", { method: "POST", body: { instanceId: d.instanceId, arrItemId: d.arrItemId, itemType: d.itemType, seasonNumber: null, title: d.title } })).id;
+	else if (!on && d.protectedId) { await api(`/protected/${d.protectedId}`, { method: "DELETE" }); d.protectedId = null; }
+}
+async function renderLibrary() {
+	try { [ruleTypes, requesters] = await Promise.all([ruleTypes.length ? ruleTypes : api("/rule-types"), api("/requesters").catch(() => [])]); } catch (e) { return fail(e); }
+	let rows = [], shown = LIB_PAGE;
+	const selected = new Set();
+	const results = h("div"), head = h("div", {}, readoutSkeleton()), bar = h("div", { class: "lib-bar", hidden: true });
+
+	// Filter: the same conditions and scope as a rule. No conditions = the whole library.
+	const combo = h("select", { "aria-label": "Combine conditions" }, [["and", "all"], ["or", "any"]].map(([v, l]) => h("option", { value: v }, l)));
+	const comboRow = h("div", { class: "combine" }, "Match when", combo, "of these are true");
+	const conds = h("div");
+	const syncConds = () => { comboRow.hidden = conds.children.length < 2; };
+	syncConds();
+	const services = segmented("Services", [["all", "All"], ["radarr", "Radarr"], ["sonarr", "Sonarr"]], "all");
+	services.addEventListener("change", () => { shown = LIB_PAGE; paint(); });
+	const tags = h("input", { placeholder: "e.g. keep", "aria-label": "Exclude tags" });
+	const titleRx = h("input", { placeholder: "e.g. ^Star Wars", "aria-label": "Exclude title patterns" });
+	const list = (i) => { const l = i.value.split(",").map((s) => s.trim()).filter(Boolean); return l.length ? l : null; };
+	const expression = () => { const items = [...conds.children].map((r) => r.read()).map((c) => { const leaf = { type: c.type, params: c.params }; return c.negate ? { op: "not", of: leaf } : leaf; }); return !items.length ? undefined : items.length === 1 ? items[0] : { op: combo.value, of: items }; };
+	const apply = h("button", { type: "button", class: "primary" }, icon("refresh"), "Apply filter");
+	const filterBox = h("details", { class: "panel lib-filter" }, h("summary", {}, "Filter"),
+		h("div", { class: "lib-filter-body" }, comboRow, conds,
+			h("div", { class: "row" }, h("button", { type: "button", onclick: () => condRow(conds, DEFAULT_LEAF, syncConds) }, icon("plus"), "Add condition")),
+			h("div", { class: "cols" }, h("div", { class: "field" }, h("div", { class: "lbl" }, "Exclude tags"), tags), h("div", { class: "field" }, h("div", { class: "lbl-row" }, h("div", { class: "lbl" }, "Exclude titles (regex)"), titleTip()), titleRx)),
+			h("div", { class: "row end" }, apply)));
+
+	const search = h("input", { type: "search", placeholder: "Search titles", "aria-label": "Search titles", oninput: () => { shown = LIB_PAGE; paint(); } });
+	const sort = h("select", { "aria-label": "Sort", onchange: () => paint() }, Object.entries(SORTS).map(([k, [l]]) => h("option", { value: k }, `Sort: ${l}`)));
+	const visible = () => { const q = search.value.trim().toLowerCase(); const svc = services.value(); return rows.filter((d) => (svc === "all" || d.service === svc) && (!q || d.title.toLowerCase().includes(q))).sort(SORTS[sort.value][1]); };
+
+	const remove = async (items, action) => {
+		const [verb, text] = { delete: ["Delete", "Removed from Sonarr/Radarr and the files are deleted."], delete_files: ["Delete files for", "Files are deleted; the titles stay in Sonarr/Radarr."], unmonitor: ["Unmonitor", "Sonarr/Radarr stop monitoring; files stay on disk."] }[action];
+		const what = items.length === 1 ? `“${items[0].title}”` : plural(items.length, "title");
+		if (!(await ask({ title: `${verb} ${what}?`, text: `${text} Protected titles are skipped. This can't be undone.`, action: verb.replace(" for", ""), danger: true }))) return;
+		const res = await api("/library/remove", { method: "POST", body: { action, items: items.map(({ instanceId, arrItemId }) => ({ instanceId, arrItemId })) } });
+		const ok = new Set(res.filter((r) => r.status === "done" || r.status === "gone").map((r) => libKey(r)));
+		const bad = res.filter((r) => !ok.has(libKey(r)));
+		if (action === "delete") rows = rows.filter((d) => !ok.has(libKey(d)));
+		else for (const d of rows) if (ok.has(libKey(d))) { if (action === "unmonitor") d.monitored = false; else { d.hasFile = false; d.sizeOnDisk = 0; d.fileCount = 0; } }
+		for (const k of ok) selected.delete(k);
+		lastPreview = null; paint();
+		toast(bad.length ? `${ok.size} done, ${bad.length} not applied: ${bad[0].message}` : `${plural(ok.size, "title")} updated`, !!bad.length);
+	};
+	const protectMany = async (items, on) => {
+		let n = 0;
+		for (const d of items) { try { await setProtected(d, on); n++; } catch (e) { fail(e); break; } }
+		lastPreview = null; paint(); if (n) toast(`${on ? "Protected" : "Unprotected"} ${plural(n, "title")}`);
+	};
+
+	function detail(d) {
+		const art = d.poster ? h("img", { src: d.poster, alt: "", class: "thumb", onerror: (e) => e.target.replaceWith(h("div", { class: "thumb noart" }, d.title)) }) : h("div", { class: "thumb noart" }, d.title);
+		const [n, u] = bytesParts(d.sizeOnDisk);
+		const prot = h("button", { type: "button", class: "small" });
+		const paintProt = () => { prot.replaceChildren(icon(d.protectedId ? "unprotected" : "protected"), d.protectedId ? "Unprotect" : "Protect"); };
+		prot.addEventListener("click", () => guard(prot, async () => { await setProtected(d, !d.protectedId); paintProt(); lastPreview = null; paint(); toast(`${d.protectedId ? "Protected" : "Unprotected"} ${d.title}`); }));
+		paintProt();
+		const dd = (k, v) => v == null || v === "" || (Array.isArray(v) && !v.length) ? null : [h("dt", {}, k), h("dd", {}, Array.isArray(v) ? v.join(", ") : v)];
+		const act = (label, ic, action, cls = "small") => h("button", { type: "button", class: cls, onclick: () => remove([d], action).then(() => { if (!rows.includes(d) || action !== "unmonitor") dialog.close(); }).catch(fail) }, icon(ic), label);
+		openDialog({ kind: "wide", title: `${d.title}${d.year ? ` (${d.year})` : ""}`, onClose: () => dialog.close(), body: [h("div", { class: "detail" }, art, h("div", { class: "main" },
+			h("div", { class: "fig" }, h("span", { class: "n" }, n), h("span", { class: "u" }, u), d.protectedId ? state("protected") : null),
+			h("dl", { class: "basis" }, dd("Type", kindLabel(d.itemType)), dd("Service", SERVICES[d.service]), dd("Status", d.status), dd("Monitored", d.monitored ? "Yes" : "No"), dd("Files", d.itemType === "series" ? `${d.fileCount} episode files` : d.hasFile ? "1 file" : "No file"),
+				dd("Rated", d.certification), dd("Rating", d.rating ? d.rating.toFixed(1) : null), dd("Quality profile", d.qualityProfile), dd("Genres", d.genres), dd("Tags", d.tags), dd("Added", d.added ? when(d.added) : null), dd("Path", d.path)),
+			h("div", { class: "acts" }, openInArrBtn(d, "small"), prot, d.monitored ? act("Unmonitor", "unprotected", "unmonitor") : null, d.hasFile || d.fileCount ? act("Delete files", "trash", "delete_files") : null, act("Delete", "trash", "delete", "small danger"))))], foot: [closeBtn()] });
+	}
+
+	function card(d) {
+		const art = d.poster ? h("img", { src: d.poster, alt: "", loading: "lazy", decoding: "async", onerror: (e) => e.target.replaceWith(h("span", { class: "noart" }, d.title)) }) : h("span", { class: "noart" }, d.title);
+		const box = h("input", { type: "checkbox", class: "pickbox", checked: selected.has(libKey(d)), "aria-label": `Select ${d.title}`, onchange: () => { box.checked ? selected.add(libKey(d)) : selected.delete(libKey(d)); paintBar(); } });
+		return h("div", { role: "listitem", class: "lib-poster" }, h("button", { type: "button", class: `poster ${d.hasFile || d.fileCount ? "" : "keep"}`, "aria-label": `${d.title}, ${bytes(d.sizeOnDisk)}`, onclick: () => detail(d) },
+			h("span", { class: "art" }, art, d.protectedId ? h("span", { class: "badge" }, "Protected") : null, h("span", { class: "size" }, d.sizeOnDisk ? bytes(d.sizeOnDisk) : "No file")),
+			h("span", { class: "cap" }, h("span", { class: "t" }, d.title), h("span", { class: "m" }, [d.year, kindLabel(d.itemType), d.monitored ? null : "Unmonitored"].filter(Boolean).join(" · ")))), box);
+	}
+	function paintBar() {
+		const sel = rows.filter((d) => selected.has(libKey(d)));
+		bar.hidden = !sel.length;
+		const b = (label, ic, fn, cls = "small") => h("button", { type: "button", class: cls, onclick: (e) => guard(e.currentTarget, () => fn(sel)) }, icon(ic), label);
+		bar.replaceChildren(h("strong", {}, `${plural(sel.length, "title")} selected · ${bytes(sel.reduce((n, d) => n + d.sizeOnDisk, 0))}`), h("span", { class: "grow" }),
+			b("Protect", "protected", (s) => protectMany(s, true)), b("Unprotect", "unprotected", (s) => protectMany(s, false)), b("Unmonitor", "unprotected", (s) => remove(s, "unmonitor")), b("Delete files", "trash", (s) => remove(s, "delete_files")), b("Delete", "trash", (s) => remove(s, "delete"), "small danger solid"),
+			h("button", { type: "button", class: "small ghost", onclick: () => { selected.clear(); paint(); } }, "Clear"));
+	}
+	function paint() {
+		const v = visible();
+		const total = v.reduce((n, d) => n + d.sizeOnDisk, 0), prot = v.filter((d) => d.protectedId).length, noFile = v.filter((d) => !d.hasFile && !d.fileCount).length;
+		head.replaceChildren(readout(total, "on disk in your library", [plural(v.length, "title"), " · ", plural(v.filter((d) => d.itemType === "movie").length, "movie"), " · ", plural(v.filter((d) => d.itemType === "series").length, "series"), prot ? ` · ${prot} protected` : null, noFile ? ` · ${noFile} with no file` : null]));
+		const all = h("input", { type: "checkbox", "aria-label": "Select all matching", checked: v.length > 0 && v.every((d) => selected.has(libKey(d))), onchange: () => { for (const d of v) all.checked ? selected.add(libKey(d)) : selected.delete(libKey(d)); paint(); } });
+		const more = shown < v.length ? h("button", { type: "button", class: "more", onclick: () => { shown += LIB_PAGE; paint(); } }, `Show more (${v.length - shown} left)`) : null;
+		results.replaceChildren(v.length ? h("div", {}, h("label", { class: "row", style: "margin:8px 0 12px" }, all, "Select all matching"), h("div", { class: "posters" }, h("div", { class: "grid", role: "list", "aria-label": "Library titles" }, v.slice(0, shown).map(card)), more)) : empty("No titles match", "Loosen the filter or search."));
+		paintBar();
+	}
+	async function load() {
+		results.replaceChildren(h("div", { "aria-busy": "true" }, h("div", { class: "skeleton h" }), h("div", { class: "skeleton", style: "width:60%" })));
+		try {
+			const r = await api("/library", { method: "POST", body: { expression: expression(), excludeTags: list(tags), excludeTitles: list(titleRx) } });
+			rows = r.items; selected.clear(); shown = LIB_PAGE; paint();
+			warns.replaceChildren(...r.warnings.map((w) => notice(w)));
+		} catch (e) { head.replaceChildren(); results.replaceChildren(badNotice(e.message.split("\n").map(friendlyIssue).join(" · "))); }
+	}
+	const warns = h("div", { class: "notices" });
+	apply.addEventListener("click", (e) => guard(e.currentTarget, load));
+	load();
+	return h("div", {}, warns, head, h("div", { class: "row lib-tools" }, services, search, sort, h("span", { class: "grow" })), filterBox, bar, results);
+}
+
 // ── Rules ──────────────────────────────────────────────────────────────────
 let ruleTypes = [];
 async function renderRules() {
@@ -658,7 +771,7 @@ function templatesSection(templates, instances, open) {
 const typeDef = (t) => ruleTypes.find((x) => x.type === t);
 function paramText(type, params) {
 	const def = typeDef(type);
-	const fmt = (v) => (Array.isArray(v) ? v.join(", ") : String(v).replaceAll("_", " ").replace(/ in days$/, " in"));
+	const fmt = (v) => (Array.isArray(v) ? (v.length > 1 ? `${v.slice(0, -1).join(", ")} or ${v.at(-1)}` : v.join("")) : String(v).replaceAll("_", " ").replace(/ in days$/, " in"));
 	if (!def) return Object.values(params).map(fmt).join(" ");
 	return def.fields.filter((f) => params[f.name] != null).map((f) => f.kind === "number" ? (/\(GB\)/.test(f.label) ? `${params[f.name]} GB` : /^\w+s$/.test(f.label) ? `${params[f.name]} ${f.label.toLowerCase()}` : `${f.label.replace(/\s*\(.*\)/, "").toLowerCase()} ${params[f.name]}`) : fmt(params[f.name])).join(" ");
 }
@@ -672,14 +785,19 @@ const isFlat = (e) => { const leaf = (n) => n.type || (n.op === "not" && n.of.ty
 // Seerr users, loaded when the rule editor opens; empty when Seerr isn't connected (fields fall back to free text).
 let requesters = [];
 function paramInput(f, value) {
-	// A rule saved with several names keeps the free-text box so none are lost.
-	if (f.source === "requesters" && requesters.length && !(Array.isArray(value) && value.length > 1)) {
-		const cur = Array.isArray(value) ? value[0] : undefined;
-		// Keep a saved name Seerr no longer lists, so editing a rule never silently drops it.
-		const names = cur && !requesters.some((n) => n.toLowerCase() === cur.toLowerCase()) ? [...requesters, cur] : requesters;
-		return h("select", { "data-f": f.name, "data-kind": "requester" },
-			f.optional ? h("option", { value: "" }, "Any requester") : null,
-			names.map((n) => h("option", { value: n, selected: !!cur && n.toLowerCase() === cur.toLowerCase() }, n)));
+	if (f.source === "requesters" && requesters.length) {
+		const cur = Array.isArray(value) ? value : [];
+		const has = (list, n) => list.some((m) => m.toLowerCase() === n.toLowerCase());
+		// Keep saved names Seerr no longer lists, so editing a rule never silently drops them.
+		const names = [...requesters, ...cur.filter((n) => !has(requesters, n))];
+		// Dropdown of checkboxes; nothing ticked = any requester (optional).
+		const label = h("span", {});
+		const box = h("details", { "data-f": f.name, "data-kind": "requester", class: "multi" }, h("summary", {}, label),
+			h("div", { class: "menu" }, names.map((n) => h("label", {}, h("input", { type: "checkbox", value: n, checked: has(cur, n) }), n))));
+		const sync = () => { const l = [...box.querySelectorAll("input:checked")].map((o) => o.value); label.textContent = l.length ? l.join(", ") : f.placeholder || "Any requester"; };
+		box.addEventListener("change", sync); sync();
+		document.addEventListener("click", (e) => { if (!box.contains(e.target)) box.open = false; });
+		return box;
 	}
 	if (f.kind === "select") return h("select", { "data-f": f.name }, f.options.map((o) => h("option", { value: o, selected: o === value }, o.replaceAll("_", " "))));
 	if (f.kind === "list") return h("input", { "data-f": f.name, "data-kind": "list", placeholder: f.placeholder || "comma separated", value: Array.isArray(value) ? value.join(", ") : "" });
@@ -690,7 +808,7 @@ function readParams(el, fields) {
 	const p = {};
 	for (const f of fields) {
 		const i = el.querySelector(`[data-f="${f.name}"]`); if (!i || i.closest("[hidden]")) continue;
-		if (i.dataset.kind === "requester") { if (i.value) p[f.name] = [i.value]; continue; }
+		if (i.dataset.kind === "requester") { const l = [...i.querySelectorAll("input:checked")].map((o) => o.value); if (l.length) p[f.name] = l; continue; }
 		const v = i.value.trim();
 		if (f.kind === "number") { if (v !== "") p[f.name] = Number(v); } else if (f.kind === "list") { const l = v.split(",").map((s) => s.trim()).filter(Boolean); if (l.length) p[f.name] = l; } else if (v !== "") p[f.name] = v;
 	}
@@ -747,6 +865,8 @@ function helpTip(label, ...content) {
 	return [btn, tip];
 }
 const TITLE_EXAMPLES = [["^Star Wars", "Starts with Star Wars"], ["Harry Potter", "Contains Harry Potter anywhere"], ["^The Office$", "Exactly The Office, nothing more"], ["Lord of the Rings|Hobbit", "Either one: | means or"], ["Christmas|Holiday", "Keeps seasonal favourites"]];
+const titleTip = () => helpTip("Title pattern examples", h("div", { class: "tip-h" }, "Pattern examples"), h("dl", {}, TITLE_EXAMPLES.map(([p, d]) => [h("dt", {}, h("code", {}, p)), h("dd", {}, d)])),
+	h("p", {}, "Matching ignores case and checks the title only, not the year. Separate patterns with commas, so a pattern can't contain one."));
 /** Segmented single choice built on native radios, so keyboard and screen readers get radio semantics. */
 function segmented(label, options, value) {
 	const name = uid();
@@ -813,8 +933,7 @@ async function editRule(rule, tpl) {
 	const titleRx = h("input", { value: (src?.excludeTitles || []).join(", "), placeholder: "e.g. ^Star Wars" });
 	titleRx.id = uid();
 	const titlesField = h("div", { class: "field" }, h("div", { class: "lbl-row" }, h("label", { class: "lbl", htmlFor: titleRx.id }, "Never touch titles"),
-		helpTip("Title pattern examples", h("div", { class: "tip-h" }, "Pattern examples"), h("dl", {}, TITLE_EXAMPLES.map(([p, d]) => [h("dt", {}, h("code", {}, p)), h("dd", {}, d)])),
-			h("p", {}, "Matching ignores case and checks the title only, not the year. Separate patterns with commas, so a pattern can't contain one."))),
+		titleTip()),
 		titleRx, h("div", { class: "help" }, "Regular expressions, comma separated."));
 	const list = (i) => { const l = i.value.split(",").map((s) => s.trim()).filter(Boolean); return l.length ? l : null; };
 
@@ -941,7 +1060,7 @@ function editInstance(inst, preset) {
 async function renderSettings() {
 	const c = await api("/config");
 	const num = (v, min = 1) => h("input", { id: uid(), type: "number", min, inputMode: "numeric", value: v ?? "" });
-	const every = num(c.intervalEvery), unit = h("select", { id: uid() }, ...["days", "weeks", "months"].map((u) => h("option", { value: u, selected: u === c.intervalUnit }, u))), time = h("input", { id: uid(), type: "time", value: c.runTime }), max = num(c.maxRemovalsPerRun), delay = num(c.queueDelayDays, 0);
+	const every = num(c.intervalEvery), unit = h("select", { id: uid() }, ...["days", "weeks", "months"].map((u) => h("option", { value: u, selected: u === c.intervalUnit }, u))), time = h("input", { id: uid(), type: "time", value: c.runTime }), max = num(c.maxRemovalsPerRun), delay = num(c.queueDelayDays, 0), auditDays = num(c.auditRetentionDays, 1);
 	const sw = (checked, label, help) => { const i = h("input", { type: "checkbox", checked }); return [i, h("label", { class: "switch" }, i, h("div", {}, h("div", { class: "t" }, label), h("div", { class: "d" }, help)))]; };
 	const [dry, dryF] = sw(c.dryRun, "Dry run", "Report what would be removed without changing anything or queueing it. Keep this on until the preview looks right.");
 	const [on, onF] = sw(c.enabled, "Run on a schedule", "Run cleanup automatically on the schedule below.");
@@ -949,7 +1068,7 @@ async function renderSettings() {
 	const save = h("button", { type: "button", class: "primary", onclick: (e) => guard(e.currentTarget, async () => {
 		const goingLive = !dry.checked && c.dryRun;
 		if (goingLive && !(await ask({ title: "Turn off dry run?", text: `Runs will queue real removals and apply them automatically after ${delay.value} day${Number(delay.value) === 1 ? "" : "s"}, unless cancelled or protected.`, action: "Turn off dry run", danger: true }))) return;
-		Object.assign(c, await api("/config", { method: "PUT", body: { dryRun: dry.checked, enabled: on.checked, intervalEvery: Number(every.value), intervalUnit: unit.value, runTime: time.value, maxRemovalsPerRun: Number(max.value), queueDelayDays: Number(delay.value) } }));
+		Object.assign(c, await api("/config", { method: "PUT", body: { dryRun: dry.checked, enabled: on.checked, intervalEvery: Number(every.value), intervalUnit: unit.value, runTime: time.value, maxRemovalsPerRun: Number(max.value), queueDelayDays: Number(delay.value), auditRetentionDays: Number(auditDays.value) } }));
 		lastPreview = null; toast("Settings saved"); refreshMode();
 	}) }, "Save settings");
 	const panel = (title, ...kids) => h("section", {}, h("div", { class: "panel" }, h("div", { class: "panel-head" }, h("h2", {}, title)), h("div", { class: "panel-body" }, ...kids)));
@@ -957,6 +1076,7 @@ async function renderSettings() {
 		panel("Safety", dryF),
 		panel("Schedule", onF, h("div", { style: "margin-top:12px" }, h("div", { class: "cols" }, f("Run every", every), f("Unit", unit), f("At (server time)", time)))),
 		panel("Queue", h("div", { class: "cols" }, f("Max removals per run", max, "Caps both executions and new queue items per run."), f("Queue delay (days)", delay, "How long a match waits before Cleanarr applies it automatically."))),
+		panel("Audit log", f("Keep audit log for (days)", auditDays, "Audit entries older than this are deleted on each run.")),
 		h("div", { class: "row end", style: "margin-top:20px" }, save));
 }
 

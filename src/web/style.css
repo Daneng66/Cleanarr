@@ -497,3 +497,31 @@ input[aria-invalid=true] { border-color: var(--red); }
 .skip-card .head .sz { padding-top: 2px; }
 .skip-card.pickable .head { padding-right: 28px; }
 .locked { opacity: .6; pointer-events: none; cursor: progress; transition: opacity .15s; }
+
+/* Library page */
+.lib-filter { margin-bottom: 16px; }
+.lib-filter summary { cursor: pointer; padding: 12px 16px; font-weight: 600; list-style: none; display: flex; align-items: center; gap: 8px; border-radius: var(--radius); }
+.lib-filter summary::-webkit-details-marker { display: none; }
+.lib-filter summary::before { content: ""; width: 16px; height: 16px; flex: none; background: var(--chevron); background-repeat: no-repeat; background-position: center; transform: rotate(-90deg); transition: transform .15s var(--step); }
+.lib-filter[open] summary { border-radius: var(--radius) var(--radius) 0 0; }
+.lib-filter[open] summary::before { transform: none; }
+.lib-filter-body { padding: 0 16px 16px; display: grid; gap: 12px; }
+.lib-tools { margin: 16px 0 4px; flex-wrap: wrap; }
+.lib-tools input[type="search"] { min-width: 220px; }
+.lib-bar { position: sticky; top: 8px; z-index: 5; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 14px; margin: 8px 0; border: 1px solid var(--line); border-radius: 8px; background: var(--rack); box-shadow: 0 4px 16px rgb(0 0 0 / .2); }
+.lib-bar[hidden] { display: none; }
+.lib-poster { position: relative; }
+.lib-poster .pickbox { position: absolute; top: 6px; left: 6px; width: 20px; height: 20px; margin: 0; cursor: pointer; accent-color: var(--amber-lamp); }
+.lib-poster .poster .badge { left: auto; right: 6px; top: 6px; bottom: auto; background: var(--teal); }
+.lib-poster .poster .size { left: 6px; right: auto; }
+
+.multi { position: relative; }
+.multi summary { list-style: none; cursor: pointer; padding: 8px 38px 8px 12px; border: 1px solid var(--line-2); border-radius: var(--radius); background: var(--field) var(--chevron) no-repeat right 12px center / 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.multi summary::-webkit-details-marker { display: none; }
+.multi .menu { position: absolute; z-index: 20; left: 0; right: 0; min-width: max-content; margin-top: 4px; max-height: 14rem; overflow-y: auto; padding: 4px; background: var(--rack); border: 1px solid var(--line-2); border-radius: var(--radius); box-shadow: var(--shadow); }
+.multi .menu label { display: flex; align-items: center; gap: 8px; padding: 6px 8px; cursor: pointer; border-radius: 4px; }
+.multi .menu label:hover { background: var(--rack-2); }
+.cond .multi .menu input { width: 18px; flex: none; }
+.multi .menu label { justify-content: flex-start; text-align: left; }
+.multi summary { text-align: left; }
+.multi[open] summary { border-color: var(--focus); }

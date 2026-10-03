@@ -98,10 +98,10 @@ describe("runs and approvals over HTTP", () => {
 		const [ap] = (await a.inject("/api/approvals?status=pending")).json();
 		expect(ap.title).toBe("Movie 1");
 		const done = (await a.inject({ method: "POST", url: `/api/approvals/${ap.id}/approve` })).json();
-		expect(done.status).toBe("executed");
+		expect(done.status).toBe("reclaimed");
 		expect(s.radarrApi.calls).toEqual(["delete:1:true"]);
 		expect((await a.inject({ method: "POST", url: `/api/approvals/${ap.id}/approve` })).statusCode).toBe(409);
-		expect((await a.inject("/api/audit")).json().length).toBeGreaterThan(2);
+		expect((await a.inject("/api/audit")).json().length).toBe(2);
 		expect((await a.inject("/api/status")).json().totals).toMatchObject({ removed: 1, bytes: 10 * 1024 ** 3 });
 	});
 	it("dry-run blocks approve with a clear 409", async () => {
@@ -161,5 +161,28 @@ describe("manual protection", () => {
 		await a.inject({ method: "POST", url: "/api/run", payload: {} });
 		expect(s.radarrApi.calls).toEqual([]);
 		expect((await a.inject("/api/approvals?status=pending")).json()).toHaveLength(0);
+	});
+});
+
+describe("library", () => {
+	const GB = 1024 ** 3;
+	it("lists everything, filters with a rule expression, and flags protected titles", async () => {
+		const { s, app: a } = app(null, { radarr: [movie(1), movie(2, { sizeOnDisk: 1 * GB })] });
+		const all = (await a.inject({ method: "POST", url: "/api/library", payload: {} })).json();
+		expect(all.items).toHaveLength(2);
+		const arrId = all.items[0].arrItemId;
+		s.store.protected.create({ instanceId: all.items[0].instanceId, arrItemId: arrId, itemType: "movie", seasonNumber: null, title: "x" });
+		const filtered = (await a.inject({ method: "POST", url: "/api/library", payload: { expression: old(10), excludeTitles: ["Movie 2"] } })).json();
+		expect(filtered.items.map((i: { title: string }) => i.title)).toEqual(["Movie 1"]);
+		expect(filtered.items[0].protectedId).toBeTruthy();
+		expect((await a.inject({ method: "POST", url: "/api/library", payload: { expression: { type: "nope", params: {} } } })).statusCode).toBe(400);
+	});
+	it("bulk remove skips manually protected titles", async () => {
+		const { s, app: a } = app(null, { radarr: [movie(1), movie(2)] });
+		const items = (await a.inject({ method: "POST", url: "/api/library", payload: {} })).json().items as Array<{ instanceId: string; arrItemId: number }>;
+		s.store.protected.create({ instanceId: items[0]!.instanceId, arrItemId: items[0]!.arrItemId, itemType: "movie", seasonNumber: null, title: "x" });
+		const res = (await a.inject({ method: "POST", url: "/api/library/remove", payload: { action: "delete", items: items.map(({ instanceId, arrItemId }) => ({ instanceId, arrItemId })) } })).json();
+		expect(res.map((r: { status: string }) => r.status)).toEqual(["blocked", "done"]);
+		expect(s.radarrApi.calls).toEqual([`delete:${items[1]!.arrItemId}:true`]);
 	});
 });

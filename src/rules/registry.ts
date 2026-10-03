@@ -39,7 +39,7 @@ export interface RuleTypeDef {
 	description: string;
 	fields: FieldMeta[];
 	schema: z.ZodType<Record<string, unknown>>;
-	needs?: "files" | "watch" | "seerr" | "watch+seerr";
+	needs?: "files" | "watch" | "seerr" | "watch+seerr" | "watch+files";
 	evaluate(item: LibraryItem, params: any, ctx: EvalContext): Eval;
 }
 
@@ -510,6 +510,29 @@ const defs: RuleTypeDef[] = [
 			return check(p.operator === "watched_by_any" ? hit : !hit, `${p.operator === "watched_by_any" ? "Watched by" : "Not watched by"} ${p.users.join("/")}`);
 		},
 	},
+	{
+		type: "stale_unwatched_episode",
+		label: "Has an episode unwatched for a while",
+		group: "Watch history",
+		description: "Seasons only (use the \"Delete season\" action): at least one episode with a file that nobody has watched in that many days since it was added. Catches episodes left behind even if the rest of the season was watched recently.",
+		needs: "watch+files",
+		fields: [{ name: "days", label: "Days unwatched", kind: "number" }],
+		schema: z.object({ days: z.number().int().min(1) }),
+		evaluate(item, p, ctx) {
+			if (!item.season) return F("Only applies to seasons");
+			const label = `Season ${item.season.number}`;
+			const w = watchOf(item, ctx);
+			if (!w) return U("Watch history unavailable");
+			const watched = new Set<number>();
+			for (const eps of w.episodesByUser?.values() ?? []) for (const n of eps) watched.add(n);
+			const stale = item.season.episodes
+				.filter((e) => e.hasFile && e.added && daysAgo(e.added, ctx.now) >= p.days && !watched.has(e.number))
+				.sort((a, b) => a.added!.getTime() - b.added!.getTime());
+			if (!stale.length) return F(`${label} has no episode unwatched for ${p.days}+ days`);
+			const e = stale[0]!;
+			return T(`${label} episode ${e.number} added ${daysAgo(e.added!, ctx.now)} days ago and is still unwatched`);
+		},
+	},
 
 	// ── Requests (Seerr) ───────────────────────────────────────────────────
 	{
@@ -589,17 +612,19 @@ const defs: RuleTypeDef[] = [
 		label: "Requester has watched",
 		group: "Requests",
 		description:
-			"Combines Seerr and watch history: has the person who requested it watched it? Items with no request never match either option.",
+			"Combines Seerr and watch history: has the person who requested it watched it? Items with no request never match either option. Optionally limit to particular requesters (any one of them).",
 		needs: "watch+seerr",
-		fields: [{ name: "operator", label: "Operator", kind: "select", options: ["requester_watched", "requester_not_watched"] }],
-		schema: z.object({ operator: z.enum(["requester_watched", "requester_not_watched"]) }),
+		// No operator field in the editor: use the Not toggle for "has not watched". Saved rules may still carry one.
+		fields: [{ name: "users", label: "Only these requesters", kind: "list", optional: true, source: "requesters", placeholder: "Leave empty for any requester" }],
+		schema: z.object({ operator: z.enum(["requester_watched", "requester_not_watched"]).default("requester_watched"), users: strList.optional() }),
 		evaluate(item, p, ctx) {
 			const reqs = seerrOf(item, ctx);
 			if (!reqs) return U("Seerr data unavailable");
 			const w = watchOf(item, ctx);
 			if (!w) return U("Watch history unavailable");
-			if (!reqs.length) return F("No requester");
-			const names = reqs.flatMap((r) => r.requesters);
+			const mine = p.users?.length ? reqs.filter((r) => r.requesters.some((n) => inList(n, p.users))) : reqs;
+			if (!mine.length) return F(p.users?.length ? `Not requested by ${p.users.join("/")}` : "No requester");
+			const names = mine.flatMap((r) => r.requesters);
 			if (!names.length) return U("Requester has no name to match against watch history");
 			const watched = w.watchedBy.some((u) => inList(u, names));
 			return check(p.operator === "requester_watched" ? watched : !watched, p.operator === "requester_watched" ? "Requester has watched it" : "Requester has not watched it");

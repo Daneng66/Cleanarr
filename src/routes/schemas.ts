@@ -32,6 +32,7 @@ export const configUpdate = z
 		dryRun: z.boolean(),
 		maxRemovalsPerRun: z.number().int().min(1).max(10_000),
 		queueDelayDays: z.number().int().min(0).max(365),
+		auditRetentionDays: z.number().int().min(1).max(3650),
 	})
 	.partial();
 
@@ -75,4 +76,23 @@ export const protectedCreate = z.object({
 	title: z.string().trim().min(1).max(300),
 	note: z.string().trim().max(500).optional(),
 	ignoreRetention: z.boolean().optional(),
+});
+
+export const libraryQuery = z.object({
+	expression: z.unknown().optional().superRefine((v, ctx) => {
+		if (v == null) return;
+		try {
+			parseExpression(v);
+		} catch (e) {
+			for (const m of e instanceof ExpressionError ? e.issues : [(e as Error).message]) ctx.addIssue({ code: "custom", message: m });
+		}
+	}),
+	serviceFilter: z.array(z.enum(["sonarr", "radarr"])).nullish(),
+	instanceFilter: z.array(z.string()).nullish(),
+	excludeTags: z.array(z.string().min(1)).nullish(),
+	excludeTitles: patterns.nullish(),
+});
+export const libraryRemove = z.object({
+	action: z.enum(["delete", "delete_files", "unmonitor"]),
+	items: z.array(z.object({ instanceId: z.string(), arrItemId: z.number().int() })).min(1).max(500),
 });

@@ -124,6 +124,11 @@ export function buildApp(deps: AppDeps): FastifyInstance {
 			const b = S.explainRequest.parse(req.body);
 			return engine.explain(b.instanceId, b.arrItemId, b.seasonNumber);
 		});
+		api.post("/library", async (req) => engine.library(S.libraryQuery.parse(req.body ?? {})));
+		api.post("/library/remove", async (req) => {
+			const b = S.libraryRemove.parse(req.body);
+			return engine.removeItems(b.items, b.action);
+		});
 		api.get<{ Params: { instanceId: string; seriesId: string }; Querystring: { season?: string } }>("/series/:instanceId/:seriesId/episodes", async (req) =>
 			engine.episodesOnDisk(req.params.instanceId, Number(req.params.seriesId), req.query.season !== undefined ? Number(req.query.season) : null),
 		);

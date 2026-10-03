@@ -35,7 +35,7 @@ export interface FileInfo {
 export interface SeasonInfo {
 	number: number;
 	/** Every episode Sonarr lists for the season, aired or not. */
-	episodes: Array<{ number: number; airDate: Date | null; hasFile: boolean }>;
+	episodes: Array<{ number: number; airDate: Date | null; added: Date | null; hasFile: boolean }>;
 }
 
 /** Service-neutral view of a Radarr movie, Sonarr series, or one season of a series (kind "season", arrId = series id). */
@@ -119,6 +119,8 @@ export interface ConfigRecord {
 	maxRemovalsPerRun: number;
 	/** How long a match waits in the queue before Cleanarr applies it automatically. 0 = next run. */
 	queueDelayDays: number;
+	/** Audit log entries older than this are pruned on each run. */
+	auditRetentionDays: number;
 	lastRunAt: string | null;
 	nextRunAt: string | null;
 }

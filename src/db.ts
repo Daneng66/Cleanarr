@@ -332,6 +332,47 @@ ALTER TABLE config ADD COLUMN run_time TEXT NOT NULL DEFAULT '03:00';
 UPDATE config SET interval_every = MAX(1, interval_hours / 24);
 ALTER TABLE config DROP COLUMN interval_hours;
 `,
+	// 9: Approval states collapse to pending / failed / reclaimed. Rejected and expired rows are dropped; anything unfinished or blocked is failed (retried next run).
+	`
+DELETE FROM approvals WHERE status IN ('rejected','expired');
+UPDATE audit_events SET event_type = 'reclaimed' WHERE event_type = 'executed';
+CREATE TABLE approvals_new (
+	id TEXT PRIMARY KEY,
+	instance_id TEXT NOT NULL,
+	arr_item_id INTEGER NOT NULL,
+	item_type TEXT NOT NULL CHECK (item_type IN ('movie','series','season')),
+	title TEXT NOT NULL,
+	year INTEGER,
+	size_on_disk INTEGER NOT NULL DEFAULT 0,
+	rule_id TEXT NOT NULL,
+	rule_name TEXT NOT NULL,
+	reason TEXT NOT NULL,
+	action TEXT NOT NULL,
+	status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','failed','reclaimed')),
+	execution_token TEXT,
+	attempt_count INTEGER NOT NULL DEFAULT 0,
+	safety_snapshot TEXT NOT NULL,
+	last_error TEXT,
+	reviewed_at TEXT,
+	executed_at TEXT,
+	execute_after TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	season_number INTEGER
+);
+INSERT INTO approvals_new SELECT id,instance_id,arr_item_id,item_type,title,year,size_on_disk,rule_id,rule_name,reason,action,
+	CASE status WHEN 'executed' THEN 'reclaimed' WHEN 'approved' THEN 'pending' WHEN 'retry_pending' THEN 'failed' WHEN 'blocked' THEN 'failed' WHEN 'executing' THEN 'failed' WHEN 'retry_executing' THEN 'failed' ELSE status END,
+	CASE WHEN status IN ('retry_pending','blocked','executing','retry_executing') THEN NULL ELSE execution_token END,
+	attempt_count,safety_snapshot,last_error,reviewed_at,executed_at,execute_after,created_at,season_number FROM approvals;
+DROP TABLE approvals;
+ALTER TABLE approvals_new RENAME TO approvals;
+CREATE INDEX approvals_status ON approvals (status);
+CREATE INDEX approvals_target ON approvals (instance_id, arr_item_id, item_type);
+CREATE INDEX approvals_execute_after ON approvals (execute_after);
+`,
+	// 10: Audit log retention, so the trail doesn't grow forever.
+	`
+ALTER TABLE config ADD COLUMN audit_retention_days INTEGER NOT NULL DEFAULT 7;
+`,
 ];
 
 export function openDb(path: string): Db {

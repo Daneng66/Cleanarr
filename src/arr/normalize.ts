@@ -112,6 +112,7 @@ export function normalizeItem(
  */
 export function seasonItems(series: LibraryItem, raw: RawItem, episodes: RawItem[], episodeFiles?: RawFile[]): LibraryItem[] {
 	const out: LibraryItem[] = [];
+	const fileById = new Map((episodeFiles ?? []).map((f) => [num(f.id), f] as const));
 	for (const s of Array.isArray(raw.seasons) ? raw.seasons : []) {
 		const n = num(s.seasonNumber);
 		const fileCount = num(s.statistics?.episodeFileCount) ?? 0;
@@ -129,7 +130,12 @@ export function seasonItems(series: LibraryItem, raw: RawItem, episodes: RawItem
 				number: n,
 				episodes: episodes
 					.filter((e) => e.seasonNumber === n && num(e.episodeNumber) !== null)
-					.map((e) => ({ number: e.episodeNumber as number, airDate: date(e.airDateUtc), hasFile: e.hasFile === true })),
+					.map((e) => ({
+						number: e.episodeNumber as number,
+						airDate: date(e.airDateUtc),
+						added: date(fileById.get(num(e.episodeFileId))?.dateAdded),
+						hasFile: e.hasFile === true,
+					})),
 			},
 		});
 	}
