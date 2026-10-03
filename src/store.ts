@@ -135,6 +135,7 @@ export function createStore(db: Db, enc: Encryptor, now: () => Date = () => new 
 				maxRemovalsPerRun: r.max_removals_per_run,
 				queueDelayDays: r.queue_delay_days,
 				auditRetentionDays: r.audit_retention_days,
+				kidsMaxAge: r.kids_max_age,
 				lastRunAt: r.last_run_at,
 				nextRunAt: r.next_run_at,
 			};
@@ -149,11 +150,11 @@ export function createStore(db: Db, enc: Encryptor, now: () => Date = () => new 
 			const next = cur.lastRunAt ? nextRun(new Date(cur.lastRunAt), c) : firstRun(now(), c.runTime);
 			db.prepare(
 				`UPDATE config SET enabled=?, interval_every=?, interval_unit=?, run_time=?, dry_run=?, max_removals_per_run=?,
-				 queue_delay_days=?, audit_retention_days=?,
+				 queue_delay_days=?, audit_retention_days=?, kids_max_age=?,
 				 next_run_at = CASE WHEN ? = 0 THEN NULL WHEN ? = 1 THEN ? WHEN ? = 1 OR next_run_at IS NULL THEN ? ELSE next_run_at END WHERE id = 1`,
 			).run(
 				c.enabled ? 1 : 0, c.intervalEvery, c.intervalUnit, c.runTime, c.dryRun ? 1 : 0, c.maxRemovalsPerRun,
-				c.queueDelayDays, c.auditRetentionDays, enabledNow ? 1 : 0, immediate ? 1 : 0, iso(now()), rescheduled ? 1 : 0, iso(next),
+				c.queueDelayDays, c.auditRetentionDays, c.kidsMaxAge, enabledNow ? 1 : 0, immediate ? 1 : 0, iso(now()), rescheduled ? 1 : 0, iso(next),
 			);
 			return config.get();
 		},

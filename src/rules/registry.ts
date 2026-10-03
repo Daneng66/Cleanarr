@@ -15,6 +15,8 @@ export interface EvalContext {
 	watch: ((item: LibraryItem) => WatchInfo | null | undefined) | null;
 	/** null = Seerr unavailable; request rules then evaluate to "unknown". */
 	seerr: ((item: LibraryItem) => SeerrRequest[]) | null;
+	/** Settings: highest minimum age that still counts as "suitable for kids". */
+	kidsMaxAge: number;
 }
 
 export type FieldKind = "number" | "text" | "select" | "list" | "boolean";
@@ -51,36 +53,21 @@ const check = (ok: boolean, reason: string): Eval => (ok ? T(reason) : F(reason)
 const lc = (s: string) => s.toLowerCase();
 const inList = (value: string | null, list: string[]) => value !== null && list.some((x) => lc(x) === lc(value));
 /**
- * Ratings that mean "fine for children" in the country Radarr/Sonarr reports them for. Matched without knowing the
- * country, so a value that is a kids' rating anywhere counts: for a protect rule that errs toward keeping more.
- * 12-and-over ratings count as children's (owner's choice), in every spelling seen: 12, 12A, 12+, -12, FSK 12.
- * Deliberately absent: "A" (all ages in Spain, adults-only in India), "13", PG-13, TV-PG.
+ * Minimum viewer age for named ratings. Matched without knowing the country, so a rating that is low-age anywhere
+ * counts: for a protect rule that errs toward keeping more. Numeric ratings (6, 12A, 12+, -12, FSK 12, 14A) are read
+ * as their age. Deliberately absent: "A" (all ages in Spain, adults-only in India), "M", and anything unrecognised.
  */
-const KIDS_RATINGS_BY_COUNTRY: Record<string, string[]> = {
-	US: ["G", "PG", "TV-Y", "TV-Y7", "TV-Y7-FV", "TV-G"],
-	GB: ["U", "PG", "Uc"],
-	IE: ["G", "PG"],
-	CA: ["G", "PG", "C", "C8"],
-	AU: ["G", "PG", "P", "C"],
-	NZ: ["G", "PG"],
-	DE: ["0", "6", "FSK 0", "FSK 6"],
-	AT: ["0", "6"],
-	FR: ["U", "TP", "Tous publics"],
-	NL: ["AL", "6"],
-	BE: ["AL", "KT", "6"],
-	ES: ["APTA", "TP", "7"],
-	IT: ["T"],
-	SE: ["Btl", "7"],
-	NO: ["6"],
-	DK: ["7"],
-	FI: ["S", "K-7"],
-	BR: ["L", "10"],
-	JP: ["G"],
-	KR: ["ALL", "All"],
-	IN: ["U"],
-	"12": ["12", "12A", "12+", "-12", "FSK 12", "12PG"],
+const RATING_AGE: Record<string, number> = {
+	g: 0, u: 0, uc: 0, c: 0, p: 0, al: 0, kt: 0, tp: 0, "tous publics": 0, apta: 0, t: 0, btl: 0, s: 0, l: 0, all: 0,
+	"tv-y": 0, "tv-g": 0, "tv-y7": 7, "tv-y7-fv": 7, pg: 7, c8: 7, "k-7": 7,
+	"tv-pg": 13, "pg-13": 13, "tv-14": 14, "ma15+": 15, r: 17, "tv-ma": 17, "nc-17": 18,
 };
-const KIDS_RATINGS = new Set(Object.values(KIDS_RATINGS_BY_COUNTRY).flat().map((r) => r.toLowerCase()));
+function ratingAge(rating: string): number | null {
+	const r = lc(rating.trim());
+	if (r in RATING_AGE) return RATING_AGE[r] as number;
+	const m = /^(?:fsk\s*|-)?(\d{1,2})(?:a|\+|pg)?$/.exec(r);
+	return m ? Number(m[1]) : null;
+}
 const gb = (bytes: number) => `${(bytes / 1024 ** 3).toFixed(1)} GB`;
 const daysAgo = (d: Date, now: Date) => Math.floor((now.getTime() - d.getTime()) / DAY);
 
@@ -218,7 +205,7 @@ const defs: RuleTypeDef[] = [
 		type: "certification",
 		label: "Content rating",
 		group: "Library",
-		description: "Age rating from Plex when available, otherwise from Radarr/Sonarr. \"Suitable for kids\" recognises children's ratings from many countries. Items without a rating are unknown.",
+		description: "Age rating from Plex when available, otherwise from Radarr/Sonarr. \"Suitable for kids\" uses the maximum age set in Settings and recognises ratings from many countries. Items without a rating are unknown.",
 		fields: [
 			{ name: "operator", label: "Operator", kind: "select", options: ["suitable_for_kids", "includes_any", "excludes_all"] },
 			{ name: "ratings", label: "Ratings", kind: "list", placeholder: "e.g. PG-13, TV-14", optional: true, hideFor: ["suitable_for_kids"] },
@@ -226,9 +213,13 @@ const defs: RuleTypeDef[] = [
 		schema: z
 			.object({ operator: z.enum(["suitable_for_kids", "includes_any", "excludes_all"]), ratings: strList.optional() })
 			.refine((v) => v.operator === "suitable_for_kids" || v.ratings !== undefined, { message: "ratings are required" }),
-		evaluate(item, p) {
-			if (item.certification === null) return U("No content rating");
-			if (p.operator === "suitable_for_kids") return check(KIDS_RATINGS.has(lc(item.certification)), `Rated ${item.certification}`);
+		evaluate(item, p, ctx) {
+			// An unrated title is treated as the maximum age, so it is never suitable for kids.
+			if (item.certification === null) return p.operator === "suitable_for_kids" ? F("No content rating") : U("No content rating");
+			if (p.operator === "suitable_for_kids") {
+				const age = ratingAge(item.certification);
+				return check(age !== null && age <= ctx.kidsMaxAge, `Rated ${item.certification} (kids up to ${ctx.kidsMaxAge}+)`);
+			}
 			const hit = inList(item.certification, p.ratings as string[]);
 			return p.operator === "includes_any"
 				? check(hit, `Rated ${item.certification} (one of ${(p.ratings as string[]).join("/")})`)

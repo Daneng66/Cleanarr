@@ -198,7 +198,7 @@ describe("migrate", () => {
 		const db = new Database(":memory:");
 		migrate(db);
 		migrate(db);
-		expect(db.pragma("user_version", { simple: true })).toBe(10);
+		expect(db.pragma("user_version", { simple: true })).toBe(11);
 		expect(db.prepare("SELECT id FROM config").all()).toEqual([{ id: 1 }]);
 		expect(() => db.prepare("INSERT INTO instances (id,name,type,url,api_key_enc,created_at) VALUES ('t','T','tautulli','http://t','x','now')").run()).toThrow(/CHECK/);
 	});

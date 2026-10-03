@@ -69,7 +69,8 @@ type Needs = { files: boolean; watch: boolean; seerr: boolean; seasons: boolean 
 
 interface Plan {
 	candidates: Candidate[];
-	skipped: RunDetail[];
+	/** Protected titles never reach the cleanup rules; kept for the preview only, so run logs aren't flooded with them. */
+	protectedItems: RunDetail[];
 	evaluated: number;
 }
 
@@ -215,7 +216,7 @@ export function createEngine(deps: EngineDeps) {
 			instances: new Map(instances.map((i) => [i.id, i])),
 			warnings: [],
 			failedInstances: new Set(),
-			ctx: { now: now(), watch: null, seerr: null },
+			ctx: { now: now(), watch: null, seerr: null, kidsMaxAge: store.config.get().kidsMaxAge },
 		};
 
 		await Promise.all(
@@ -303,7 +304,7 @@ export function createEngine(deps: EngineDeps) {
 		const protectedKeys = store.protected.targetKeys();
 		const overrideKeys = store.protected.targetKeys(true);
 		const candidates: Candidate[] = [];
-		const skipped: RunDetail[] = [];
+		const protectedItems: RunDetail[] = [];
 		for (const item of snap.items) {
 			if (snap.failedInstances.has(item.instanceId)) continue;
 			const fake = (rule: RuleRecord, reason: string): Candidate => ({ item, rule, reason });
@@ -318,18 +319,21 @@ export function createEngine(deps: EngineDeps) {
 					}
 				}
 			}
+			if (protectedBy) {
+				if (item.kind !== "season") protectedItems.push(detail(fake({ id: "", name: "", action: "" } as unknown as RuleRecord, ""), "skipped", protectedBy));
+				continue;
+			}
 			for (const { rule, expr } of cleanup) {
 				// Season items are only for "delete season" rules, and those rules only see season items.
 				if ((item.kind === "season") !== (rule.action === "delete_season")) continue;
 				if (!passesFilters(item, rule).ok) continue;
 				const r = evaluateExpression(expr, item, snap.ctx);
 				if (r.state !== "true") continue;
-				if (protectedBy) skipped.push(detail(fake(rule, r.reason), "skipped", protectedBy));
-				else candidates.push({ item, rule, reason: r.reason });
+				candidates.push({ item, rule, reason: r.reason });
 				break;
 			}
 		}
-		return { candidates, skipped, evaluated: snap.items.filter((i) => i.kind !== "season").length };
+		return { candidates, protectedItems, evaluated: snap.items.filter((i) => i.kind !== "season").length };
 	}
 
 	/** `queued`: candidates that already have an open approval. Never re-proposed, but still worth showing (with their queue status) rather than hiding. */
@@ -407,7 +411,7 @@ export function createEngine(deps: EngineDeps) {
 		}
 		if (store.protected.targetKeys().has(targetKey(item))) return { ok: false, kind: "protected", message: "Manually protected" };
 
-		const ctx: EvalContext = { now: now(), watch: ev.watch, seerr: ev.seerr };
+		const ctx: EvalContext = { now: now(), watch: ev.watch, seerr: ev.seerr, kidsMaxAge: store.config.get().kidsMaxAge };
 		const overridden = store.protected.targetKeys(true).has(targetKey(item));
 		for (const { rule: r, expr } of rules) {
 			if (overridden && r.mode === "retention") continue;
@@ -555,7 +559,7 @@ export function createEngine(deps: EngineDeps) {
 			const p = plan(snap, rules);
 			evaluated = p.evaluated;
 			const { keep, queued } = suppress(p.candidates);
-			details.push(...p.skipped, ...queued.map((c) => detail(c, "skipped", "Already has an open approval")));
+			details.push(...queued.map((c) => detail(c, "skipped", "Already has an open approval")));
 			const { only } = opts;
 			const ordered = order(keep).filter((c) => !only || (c.item.instanceId === only.instanceId && c.item.arrId === only.arrItemId && (c.item.season?.number ?? null) === (only.seasonNumber ?? null)));
 			flagged = ordered.length;
@@ -625,7 +629,7 @@ export function createEngine(deps: EngineDeps) {
 		}
 		const ev = await loadEvidence(needs);
 		applyCertFallback([item], ev.cert);
-		const ctx: EvalContext = { now: now(), watch: ev.watch, seerr: ev.seerr };
+		const ctx: EvalContext = { now: now(), watch: ev.watch, seerr: ev.seerr, kidsMaxAge: store.config.get().kidsMaxAge };
 		const warnings = ev.warnings;
 		return {
 			item: { title: item.title, year: item.year, kind: item.kind, seasonNumber: item.season?.number ?? null, sizeOnDisk: item.sizeOnDisk, monitored: item.monitored, status: item.status, certification: item.certification, tags: item.tags, path: item.path },
@@ -680,7 +684,7 @@ export function createEngine(deps: EngineDeps) {
 			evaluated: p.evaluated,
 			warnings: [...rw, ...snap.warnings],
 			candidates: shown.map(withQueue),
-			skipped: p.skipped,
+			skipped: p.protectedItems,
 			totalBytes: shown.reduce((n, c) => n + c.item.sizeOnDisk, 0),
 			library: { ...librarySummary(snap.items), capacityBytes },
 			missing: missingItems(snap.items),

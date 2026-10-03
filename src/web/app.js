@@ -203,7 +203,7 @@ let lastPreview = null; // { at, data } so returning to the dashboard doesn't re
 async function renderDashboard() {
 	const [s, instances, rules] = await Promise.all([api("/status"), api("/instances"), api("/rules")]);
 	const libs = instances.filter((i) => i.type === "sonarr" || i.type === "radarr");
-	const cleanupRules = rules.filter((r) => r.enabled && r.mode === "cleanup");
+	const anyRules = rules.some((r) => r.enabled);
 	const out = h("div");
 	const notices = h("div", { class: "notices" });
 	if (s.config.dryRun && libs.length) notices.append(notice("Dry run is on: runs only report what they would do, and nothing is queued. ", h("a", { href: "#/settings" }, "Turn it off in Settings"), " once the preview looks right."));
@@ -215,7 +215,7 @@ async function renderDashboard() {
 			posterState("empty", "No library connected", "Titles your rules would remove show up here as posters, largest first.", h("button", { type: "button", onclick: () => { location.hash = "#/instances"; editInstance(); } }, icon("plus"), "Add Sonarr or Radarr")));
 		return out;
 	}
-	if (!cleanupRules.length) {
+	if (!anyRules) {
 		main.append(readout(null, "No cleanup rules yet", "Write a rule and the preview shows exactly what it would pull, before anything changes."),
 			posterState("empty", "Nothing to pull yet", "Rules decide which titles go, e.g. added over a year ago and not watched in 180 days.", h("button", { type: "button", onclick: () => { location.hash = "#/rules"; editRule(); } }, icon("plus"), "Write a rule")),
 			lastRunPanel(s.lastRun));
@@ -479,7 +479,7 @@ async function renderProtected() {
 					h("div", { class: "head" }, h("div", { class: "t", title: nameOf(d) }, nameOf(d), h("small", {}, kindLabel(d.itemType), d.certification ? [" · ", h("span", { class: "cert" }, d.certification)] : null)), d.sizeOnDisk ? h("span", { class: "sz" }, bytes(d.sizeOnDisk)) : null),
 					keptBy(p.ignoreRetention ? "Retention rules ignored" : "Manually protected"),
 					h("div", { class: "foot" },
-						h("div", { class: "foot-left" }, protectToggle(toggle(p), nameOf(d), !p.ignoreRetention)))));
+						h("div", { class: "foot-left" }, h("span", { class: "row-acts" }, openInArrBtn(d), protectToggle(toggle(p), nameOf(d), !p.ignoreRetention))))));
 		});
 		return h("div", {}, h("div", { class: "row", style: "margin:16px 0 12px" }, h("label", { class: "row" }, all, "Select all"), h("span", { class: "grow" }), bulk), h("div", { class: "skip-grid" }, cards));
 	};
@@ -583,9 +583,9 @@ function skippedList(rows, toggle) {
 			h("div", { class: "body" },
 				h("div", { class: "head" }, h("div", { class: "t", title: nameOf(d) }, nameOf(d), h("small", {}, kindLabel(d.itemType), d.certification ? [" · ", h("span", { class: "cert" }, d.certification)] : null)), h("span", { class: "sz" }, bytes(d.sizeOnDisk))),
 				cat === "protected" ? keptBy(d.message) : null,
-				h("div", { class: cat === "protected" ? "why would" : "why", title: `${d.ruleName}: ${d.reason}` }, cat === "protected" ? "Otherwise " : null, actionTag(d.action), ` ${d.ruleName}`, cat === "protected" ? null : `: ${d.reason}`),
+				cat === "protected" && !d.ruleName ? null : h("div", { class: cat === "protected" ? "why would" : "why", title: `${d.ruleName}: ${d.reason}` }, cat === "protected" ? "Otherwise " : null, actionTag(d.action), ` ${d.ruleName}`, cat === "protected" ? null : `: ${d.reason}`),
 				h("div", { class: "foot" },
-					h("div", { class: "foot-left" }, cat !== "protected" ? badge : null, cat !== "protected" ? h("span", { class: "row-acts" }, openInArrBtn(d), protectBtn(d)) : toggle ? protectToggle(toggle(d), nameOf(d)) : null))));
+					h("div", { class: "foot-left" }, cat !== "protected" ? badge : null, cat !== "protected" ? h("span", { class: "row-acts" }, openInArrBtn(d), protectBtn(d)) : h("span", { class: "row-acts" }, openInArrBtn(d), toggle ? protectToggle(toggle(d), nameOf(d)) : null)))));
 	}));
 }
 
@@ -1061,7 +1061,7 @@ function editInstance(inst, preset) {
 async function renderSettings() {
 	const c = await api("/config");
 	const num = (v, min = 1) => h("input", { id: uid(), type: "number", min, inputMode: "numeric", value: v ?? "" });
-	const every = num(c.intervalEvery), unit = h("select", { id: uid() }, ...["days", "weeks", "months"].map((u) => h("option", { value: u, selected: u === c.intervalUnit }, u))), time = h("input", { id: uid(), type: "time", value: c.runTime }), max = num(c.maxRemovalsPerRun), delay = num(c.queueDelayDays, 0), auditDays = num(c.auditRetentionDays, 1);
+	const every = num(c.intervalEvery), unit = h("select", { id: uid() }, ...["days", "weeks", "months"].map((u) => h("option", { value: u, selected: u === c.intervalUnit }, u))), time = h("input", { id: uid(), type: "time", value: c.runTime }), max = num(c.maxRemovalsPerRun), delay = num(c.queueDelayDays, 0), kids = h("select", { id: uid() }, ...[[0, "All ages only (G, U, TV-Y)"], [7, "Up to 7+ (PG, TV-Y7)"], [12, "Up to 12+ (recommended)"], [13, "Up to 13+ (PG-13, TV-PG)"], [14, "Up to 14+ (TV-14)"], [16, "Up to 16+"]].map(([v, t]) => h("option", { value: v, selected: v === c.kidsMaxAge }, t))), auditDays = num(c.auditRetentionDays, 1);
 	const sw = (checked, label, help) => { const i = h("input", { type: "checkbox", checked }); return [i, h("label", { class: "switch" }, i, h("div", {}, h("div", { class: "t" }, label), h("div", { class: "d" }, help)))]; };
 	const [dry, dryF] = sw(c.dryRun, "Dry run", "Report what would be removed without changing anything or queueing it. Keep this on until the preview looks right.");
 	const [on, onF] = sw(c.enabled, "Run on a schedule", "Run cleanup automatically on the schedule below.");
@@ -1069,7 +1069,7 @@ async function renderSettings() {
 	const save = h("button", { type: "button", class: "primary", onclick: (e) => guard(e.currentTarget, async () => {
 		const goingLive = !dry.checked && c.dryRun;
 		if (goingLive && !(await ask({ title: "Turn off dry run?", text: `Runs will queue real removals and apply them automatically after ${delay.value} day${Number(delay.value) === 1 ? "" : "s"}, unless cancelled or protected.`, action: "Turn off dry run", danger: true }))) return;
-		Object.assign(c, await api("/config", { method: "PUT", body: { dryRun: dry.checked, enabled: on.checked, intervalEvery: Number(every.value), intervalUnit: unit.value, runTime: time.value, maxRemovalsPerRun: Number(max.value), queueDelayDays: Number(delay.value), auditRetentionDays: Number(auditDays.value) } }));
+		Object.assign(c, await api("/config", { method: "PUT", body: { dryRun: dry.checked, enabled: on.checked, intervalEvery: Number(every.value), intervalUnit: unit.value, runTime: time.value, maxRemovalsPerRun: Number(max.value), queueDelayDays: Number(delay.value), auditRetentionDays: Number(auditDays.value), kidsMaxAge: Number(kids.value) } }));
 		lastPreview = null; toast("Settings saved"); refreshMode();
 	}) }, "Save settings");
 	const panel = (title, ...kids) => h("section", {}, h("div", { class: "panel" }, h("div", { class: "panel-head" }, h("h2", {}, title)), h("div", { class: "panel-body" }, ...kids)));
@@ -1077,6 +1077,7 @@ async function renderSettings() {
 		panel("Safety", dryF),
 		panel("Schedule", onF, h("div", { style: "margin-top:12px" }, h("div", { class: "cols" }, f("Run every", every), f("Unit", unit), f("At (server time)", time)))),
 		panel("Queue", h("div", { class: "cols" }, f("Max removals per run", max, "Caps both executions and new queue items per run."), f("Queue delay (days)", delay, "How long a match waits before Cleanarr applies it automatically."))),
+		panel("Kids' content", f("Suitable for kids up to", kids, "Used by the \"suitable for kids\" content-rating rules, e.g. your protect rules. Ratings from any country are matched by minimum age; unrated titles never count as kids.")),
 		panel("Audit log", f("Keep audit log for (days)", auditDays, "Audit entries older than this are deleted on each run.")),
 		h("div", { class: "row end", style: "margin-top:20px" }, save));
 }

@@ -128,7 +128,6 @@ describe("safety", () => {
 		s.rule("old", old(100));
 		s.rule("keep tagged", { type: "tag_match", params: { operator: "includes_any", tags: ["keep"] } }, { mode: "retention" });
 		const log = await s.engine.run({ trigger: "manual" });
-		expect(log?.details.find((d: any) => d.arrItemId === 1)?.message).toMatch(/Protected by retention/);
 		await approveAll(s);
 		expect(s.radarrApi.calls).toEqual(["delete:2:true"]);
 	});
@@ -161,7 +160,6 @@ describe("safety", () => {
 		s.rule("old", old(100));
 		s.store.protected.create({ instanceId: s.radarr.id, arrItemId: 1, itemType: "movie", title: "Movie 1" });
 		const log = await s.engine.run({ trigger: "manual" });
-		expect(log?.details.find((d: any) => d.arrItemId === 1)?.message).toBe("Manually protected");
 		await approveAll(s);
 		expect(s.radarrApi.calls).toEqual(["delete:2:true"]);
 	});

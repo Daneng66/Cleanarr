@@ -33,6 +33,7 @@ export const configUpdate = z
 		maxRemovalsPerRun: z.number().int().min(1).max(10_000),
 		queueDelayDays: z.number().int().min(0).max(365),
 		auditRetentionDays: z.number().int().min(1).max(3650),
+		kidsMaxAge: z.number().int().min(0).max(18),
 	})
 	.partial();
 

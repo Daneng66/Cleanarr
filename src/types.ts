@@ -121,6 +121,8 @@ export interface ConfigRecord {
 	queueDelayDays: number;
 	/** Audit log entries older than this are pruned on each run. */
 	auditRetentionDays: number;
+	/** Highest minimum age a rating can have and still count as "suitable for kids". */
+	kidsMaxAge: number;
 	lastRunAt: string | null;
 	nextRunAt: string | null;
 }

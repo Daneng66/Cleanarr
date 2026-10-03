@@ -279,7 +279,7 @@ input[type=checkbox] { accent-color: var(--ink); width: 18px; height: 18px; min-
 .skip-card .why .by { margin-top: 0; margin-bottom: 4px; color: var(--ink); font-weight: 500; -webkit-line-clamp: 1; }
 .skip-card .foot { margin-top: auto; padding-top: 10px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .skip-card .foot-left { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.skip-card .row-acts { display: flex; align-items: center; gap: 2px; }
+.skip-card .row-acts { display: flex; align-items: center; gap: 8px; }
 .skip-card .foot a { text-decoration: none; border-radius: 3px; }
 .skip-card .foot a:hover .state { text-decoration: underline; text-underline-offset: 3px; }
 .skip-card .foot a:focus-visible { outline: 2px solid var(--teal); outline-offset: 3px; }

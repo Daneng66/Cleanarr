@@ -11,7 +11,7 @@ import { ruleCreate } from "../src/routes/schemas.js";
 
 const maps = { tags: new Map([[1, "keep"]]), profiles: new Map([[1, "HD-1080p"]]) };
 const item = (over = {}) => normalizeItem(movie(1, over), { instanceId: "i", service: "radarr", ...maps });
-const ctx = (watch: EvalContext["watch"] = null, seerr: EvalContext["seerr"] = null): EvalContext => ({ now: NOW, watch, seerr });
+const ctx = (watch: EvalContext["watch"] = null, seerr: EvalContext["seerr"] = null): EvalContext => ({ now: NOW, watch, seerr, kidsMaxAge: 12 });
 const ev = (expr: unknown, i = item(), c = ctx()) => evaluateExpression(parseExpression(expr), i, c);
 
 describe("leaf rules", () => {
@@ -191,11 +191,15 @@ describe("content rating", () => {
 		for (const c of ["PG-13", "A", "R", "15", "TV-PG", "TV-MA", "FSK 16", "-16", "MA15+"]) expect(k(c), c).toBe("false");
 		expect(() => parseExpression({ type: "certification", params: { operator: "includes_any" } })).toThrow();
 	});
-	it("kids template: a children's rating protects, PG-13 and R do not, no rating protects as unknown", () => {
+	it("suitable_for_kids follows the configured max age", () => {
+		const k = (cert: string, kidsMaxAge: number) => evaluateExpression(parseExpression({ type: "certification", params: { operator: "suitable_for_kids" } }), item({ certification: cert }), { ...ctx(), kidsMaxAge }).state;
+		expect([k("PG", 0), k("G", 0), k("PG-13", 13), k("TV-14", 13), k("TV-14", 14), k("FSK 16", 16), k("NR", 18)]).toEqual(["false", "true", "true", "false", "true", "true", "false"]);
+	});
+	it("kids template: a children's rating protects, PG-13, R and no rating do not", () => {
 		expect(ev(kids, item({ certification: "PG" })).state).toBe("true");
 		expect(ev(kids, item({ certification: "PG-13", genres: ["Family"] })).state).toBe("false");
 		expect(ev(kids, item({ certification: "R" })).state).toBe("false");
-		expect(ev(kids, item({ certification: undefined })).state).toBe("unknown");
+		expect(ev(kids, item({ certification: undefined })).state).toBe("false");
 	});
 	it("kids shows template: TV-Y7 protects, TV-PG and TV-MA do not", () => {
 		const shows = RULE_TEMPLATES.find((x) => x.id === "protect-kids-shows")!.expression;
