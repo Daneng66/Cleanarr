@@ -67,6 +67,8 @@ function state(s, label) {
 const ACTION_LABEL = { delete: "Delete", unmonitor: "Unmonitor", delete_files: "Delete files", delete_season: "Delete season" };
 const actionTag = (a) => h("span", { class: `tag ${a}` }, ACTION_LABEL[a] || a);
 const protectTag = () => h("span", { class: "tag protect" }, "Protect");
+const SERVICE_LABEL = { sonarr: "Sonarr", radarr: "Radarr" };
+const serviceTag = (svc) => h("span", { class: "tag service" }, SERVICE_LABEL[svc] || svc);
 
 /** A button that opens the item's Sonarr/Radarr page in a new tab. `d` needs instanceId, arrItemId, itemType. */
 function openInArrBtn(d, cls = "ghost small") {
@@ -745,7 +747,7 @@ async function renderRules() {
 		up.disabled = i === 0; down.disabled = i === rules.length - 1;
 		li.append(h("div", { class: "slotno", title: `Priority ${i + 1}` }, String(i + 1).padStart(2, "0")),
 			h("input", { type: "checkbox", class: "toggle", checked: r.enabled, "aria-label": `${r.name} enabled`, onchange: (e) => toggle(r, e, li) }),
-			h("div", { class: "body" }, h("div", { class: "nm" }, h("strong", {}, r.name), r.mode === "retention" ? protectTag() : actionTag(r.action)), h("div", { class: "expr" }, humanExpr(r.expression))),
+			h("div", { class: "body" }, h("div", { class: "nm" }, h("strong", {}, r.name), r.mode === "retention" ? protectTag() : actionTag(r.action), r.serviceFilter?.map(serviceTag)), h("div", { class: "expr" }, humanExpr(r.expression))),
 			h("div", { class: "acts" }, up, down, iconBtn("edit", `Edit ${r.name}`, () => editRule(r), "ghost"), iconBtn("trash", `Delete ${r.name}`, () => remove(r), "ghost danger")));
 		return li;
 	};
