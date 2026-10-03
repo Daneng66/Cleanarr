@@ -233,6 +233,7 @@ async function renderDashboard() {
 		toast(`Run ${r.status}: ${r.itemsFlagged} flagged, ${r.itemsRemoved} removed`);
 		lastPreview = null; route();
 	}) }, icon("play"), "Reclaim now");
+	runBtn.disabled = true; // until the first preview says there is something to reclaim
 	const refreshBtn = h("button", { type: "button", onclick: (e) => guard(e.currentTarget, () => load(true)) }, icon("refresh"), "Run Rules");
 	const acts = h("div", { class: "acts" }, refreshBtn, runBtn);
 
@@ -249,6 +250,7 @@ async function renderDashboard() {
 		const openHere = flagged.filter((c) => c.queue && c.queue.status !== "reclaimed").length;
 		const totalOpen = (s.approvals.pending || 0) + (s.approvals.failed || 0);
 		const orphaned = Math.max(0, totalOpen - openHere);
+		runBtn.disabled = !flagged.length; runBtn.title = flagged.length ? "" : "Nothing to reclaim";
 		if (flagged.length !== waiting) { waiting = flagged.length; paintNav(); }
 		const nw = (t) => h("span", { class: "nw" }, t);
 		const facts = flagged.length
@@ -257,7 +259,7 @@ async function renderDashboard() {
 			: `${plural(p.evaluated, "title")} evaluated. Your rules match nothing right now.`;
 		head.replaceChildren(readout(reclaim, "reclaimable by your rules", facts, acts));
 		warn.replaceChildren(...(p.warnings.length ? [h("div", { class: "notices", style: "margin-top:16px" }, ...p.warnings.map((w) => notice(w)))] : []));
-		strip.replaceChildren(flagged.length ? posterGrid(flagged, s.config) : posterState("empty clear", "Shelf is clear", `No title matches a cleanup rule.${orphaned ? ` ${plural(orphaned, "queued removal")} no longer match${orphaned === 1 ? "es" : ""} and will be re-checked before running.` : " Loosen a rule or check back after more is added."}`, h("a", { class: "btn", href: "#/rules" }, "Review rules")));
+		strip.replaceChildren(flagged.length ? posterGrid(flagged, s.config) : posterState("empty clear", "Nothing to purge. Your library is suspiciously tidy.", `No title matches a cleanup rule.${orphaned ? ` ${plural(orphaned, "queued removal")} no longer match${orphaned === 1 ? "es" : ""} and will be re-checked before running.` : " Loosen a rule or check back after more is added."}`, h("a", { class: "btn", href: "#/rules" }, "Review rules")));
 		drivers.replaceChildren(flagged.length ? driversPanel(flagged) : "");
 		lib.replaceChildren(libraryPanel(p.library, p.skipped.filter((d) => skipCategory(d)[0] === "protected"), p.missing));
 	}
