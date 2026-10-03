@@ -455,41 +455,45 @@ function libraryPanel(l, prot = [], missing = []) {
 }
 /** Protected-titles page: rule-protected matches, or a toggle to the manual list with bulk unprotect. */
 async function renderProtected() {
-	const prot = (await getPreview()).skipped.filter((d) => skipCategory(d)[0] === "protected"), mode = "all";
-	const body = h("div", {});
+	const protAll = (await getPreview()).skipped.filter((d) => skipCategory(d)[0] === "protected"), mode = "all";
+	const instances = (await api("/instances")).filter((i) => i.type === "sonarr" || i.type === "radarr");
+	let inst = "all";
+	const inScope = (d) => inst === "all" || d.instanceId === inst;
+	const body = h("div", {}), statsEl = h("div");
 	const key = (d) => `${d.instanceId}:${d.arrItemId}:${d.itemType}:${d.seasonNumber ?? ""}`;
-	const info = new Map(prot.map((d) => [key(d), d]));
+	const info = new Map(protAll.map((d) => [key(d), d]));
+	let picks = [], bar = h("div", { style: "margin-left:auto" });
+	const pickBox = (d) => {
+		const box = h("input", { type: "checkbox", class: "pick", "aria-label": `Select ${nameOf(d)}`, onchange: () => paintBar() });
+		picks.push({ box, d });
+		return box;
+	};
+	let paintBar = () => {};
 	const manualList = (items, toggle) => {
-		const boxes = items.map((p) => h("input", { type: "checkbox", "aria-label": `Select ${nameOf(p)}` }));
-		const all = h("input", { type: "checkbox", "aria-label": "Select all", onchange: () => boxes.forEach((b) => { b.checked = all.checked; }) });
-		const bulk = h("button", { type: "button", class: "danger solid", onclick: (e) => guard(e.currentTarget, async () => {
-			const sel = items.filter((p, i) => boxes[i].checked && !p.ignoreRetention);
-			if (!sel.length) return toast("Select protected items first", true);
-			if (!(await ask({ title: `Unprotect ${plural(sel.length, "item")}?`, text: "Cleanup rules can match them again on the next run.", action: "Unprotect", danger: true }))) return show(seg.value());
-			await Promise.all(sel.map((p) => api(`/protected/${p.id}`, { method: "DELETE" })));
-			toast(`Unprotected ${plural(sel.length, "item")}`);
-			show(seg.value());
-		}) }, "Unprotect selected");
 		const cards = items.map((p, i) => {
 			const d = { ...info.get(key(p)), ...p };
 			const art = d.poster
 				? h("img", { src: d.poster, alt: "", class: "art", loading: "lazy", decoding: "async", onerror: (e) => e.target.replaceWith(h("span", { class: "art noart" }, d.title)) })
 				: h("span", { class: "art noart" }, d.title);
-			boxes[i].classList.add("pick");
-			return h("div", { class: "skip-card pickable" }, art, boxes[i],
+			return h("div", { class: "skip-card pickable" }, art, pickBox(d),
 				h("div", { class: "body" },
 					h("div", { class: "head" }, h("div", { class: "t", title: nameOf(d) }, nameOf(d), h("small", {}, kindLabel(d.itemType), d.certification ? [" · ", h("span", { class: "cert" }, d.certification)] : null)), d.sizeOnDisk ? h("span", { class: "sz" }, bytes(d.sizeOnDisk)) : null),
 					keptBy(p.ignoreRetention ? "Retention rules ignored" : "Manually protected"),
 					h("div", { class: "foot" },
 						h("div", { class: "foot-left" }, h("span", { class: "row-acts" }, openInArrBtn(d), protectToggle(toggle(p), nameOf(d), !p.ignoreRetention))))));
 		});
-		return h("div", {}, h("div", { class: "row", style: "margin:16px 0 12px" }, h("label", { class: "row" }, all, "Select all"), h("span", { class: "grow" }), bulk), h("div", { class: "skip-grid" }, cards));
+		return h("div", { class: "skip-grid" }, cards);
 	};
 	const show = async (mode) => {
 		body.replaceChildren(empty("Loading…"));
+		picks = []; bar.replaceChildren();
 		let items;
 		try { items = await api("/protected"); } catch (e) { body.replaceChildren(); return fail(e); }
 		const ids = new Map(items.filter((p) => !p.ignoreRetention).map((p) => [key(p), p.id]));
+		const ov = new Map(items.filter((p) => p.ignoreRetention).map((p) => [key(p), p.id]));
+		paintStats(protAll, items); // headline numbers ignore the instance filter
+		const prot = protAll.filter(inScope);
+		items = items.filter(inScope);
 		// Manual protection is deleted/recreated; retention-rule protection is overridden/restored per item.
 		const toggle = (d) => {
 			const k = key(d), manual = ids.has(k);
@@ -504,17 +508,52 @@ async function renderProtected() {
 			const post = async () => { p.id = (await api("/protected", { method: "POST", body: { instanceId: p.instanceId, arrItemId: p.arrItemId, itemType: p.itemType, seasonNumber: p.seasonNumber ?? null, title: p.title, ignoreRetention: p.ignoreRetention } })).id; };
 			return p.ignoreRetention ? { off: post, on: del } : { off: del, on: post };
 		};
-		if (mode === "rule") { body.replaceChildren(skippedList(prot, toggle)); return; }
+		const post = (d, extra) => api("/protected", { method: "POST", body: { instanceId: d.instanceId, arrItemId: d.arrItemId, itemType: d.itemType, seasonNumber: d.seasonNumber ?? null, title: d.title, ...extra } });
+		const del = (id) => api(`/protected/${id}`, { method: "DELETE" });
+		// Unprotect = drop the manual protection and, where a retention rule still covers it, override that rule too.
+		const unprotect = (d) => { const k = key(d); return Promise.all([ids.has(k) ? del(ids.get(k)) : null, info.has(k) && !ov.has(k) ? post(d, { ignoreRetention: true }) : null]); };
+		// Protect = lift an override; titles no rule covers get a manual protection.
+		const protect = async (d) => { const k = key(d); if (ov.has(k)) await del(ov.get(k)); if (!info.has(k) && !ids.has(k)) await post(d, {}); };
+		const bulk = (label, cls, fn, done) => h("button", { type: "button", class: cls, onclick: (e) => guard(e.currentTarget, async () => {
+			const sel = picks.filter((x) => x.box.checked).map((x) => x.d);
+			if (!sel.length) return toast("Select titles first", true);
+			if (!(await ask({ title: `${label} ${plural(sel.length, "title")}?`, text: done, action: label, danger: label === "Unprotect" }))) return;
+			await Promise.all(sel.map((d) => (label === "Unprotect" ? unprotect(d) : protect(d))));
+			lastPreview = null; toast(`${label}ed ${plural(sel.length, "title")}`);
+			route(); // rule-protected cards come from the preview, so rebuild the page
+		}) }, label + " selected");
+		const all = h("input", { type: "checkbox", "aria-label": "Select all", onchange: () => { picks.forEach((x) => { x.box.checked = all.checked; }); paintBar(); } });
+		const count = h("span", { class: "faint" });
+		paintBar = () => { const n = picks.filter((x) => x.box.checked).length; count.textContent = n ? `${n} selected` : ""; all.checked = n > 0 && n === picks.length; };
+		bar.replaceChildren(h("div", { class: "row", style: "gap:12px;flex-wrap:wrap;margin-left:auto" }, h("label", { class: "row" }, all, "Select all"), count, bulk("Protect", "", null, "Lifts any rule override and protects titles no rule covers."), bulk("Unprotect", "danger solid", null, "Cleanup rules can match them again on the next run.")));
+		if (mode === "rule") { body.replaceChildren(skippedList(prot, toggle, pickBox)); return; }
 		// "All": rule-protected cards, plus manual items not already shown there
 		const seen = new Set(prot.map(key));
 		if (mode === "all") items = items.filter((p) => !seen.has(key(p)));
-		if (mode === "manual" && !items.length) { body.replaceChildren(empty("Nothing manually protected")); return; }
-		body.replaceChildren(...(mode === "all" ? [skippedList(prot, toggle)] : []), ...(items.length ? [manualList(items, manualToggle)] : []));
+		if (mode === "manual" && !items.length) { bar.replaceChildren(); body.replaceChildren(empty("Nothing manually protected")); return; }
+		body.replaceChildren(...(mode === "all" ? [skippedList(prot, toggle, pickBox)] : []), ...(items.length ? [manualList(items, manualToggle)] : []));
+	};
+	/** Headline numbers across every instance: rule-protected titles plus manual ones not already counted. */
+	const paintStats = (prot, items) => {
+		const seen = new Set(prot.map(key));
+		const manual = items.filter((p) => !p.ignoreRetention);
+		const all = [...prot, ...manual.filter((p) => !seen.has(key(p))).map((p) => ({ ...info.get(key(p)), ...p }))];
+		const stat = (label, value, sub) => h("div", {}, h("div", { class: "k" }, label), h("div", { class: "n" }, value), h("small", {}, sub));
+		const sized = (list) => bytes(list.reduce((n, d) => n + (d.sizeOnDisk || 0), 0));
+		const movies = all.filter((d) => d.itemType === "movie"), series = all.filter((d) => d.itemType !== "movie");
+		statsEl.replaceChildren(h("div", { class: "panel stats", style: "margin-bottom:16px" },
+			stat("Protected", all.length.toLocaleString(), `${prot.length.toLocaleString()} by rules · ${manual.length.toLocaleString()} manual`),
+			stat("Size kept", bytes(all.reduce((n, d) => n + (d.sizeOnDisk || 0), 0)), "on disk"),
+			stat("Movies", movies.length.toLocaleString(), sized(movies)),
+			stat("Series", series.length.toLocaleString(), sized(series)),
+			stat("Rules protecting", new Set(prot.map((d) => /"(.+?)"/.exec(d.message)?.[1]).filter(Boolean)).size.toLocaleString(), "retention rules")));
 	};
 	const seg = segmented("List", [["all", "All"], ["rule", "By rules"], ["manual", "Manually protected"]], mode);
 	seg.addEventListener("change", () => show(seg.value()));
+	const instSeg = instances.length > 1 ? segmented("Instance", [["all", "All instances"], ...instances.map((i) => [i.id, i.name])], inst) : null;
+	instSeg?.addEventListener("change", () => { inst = instSeg.value(); show(seg.value()); });
 	show(mode);
-	return h("div", {}, backHead("Protected", "Titles matching a cleanup rule but kept by a retention rule, or items you protected by hand."), h("div", { style: "margin-bottom:16px" }, seg), body);
+	return h("div", {}, backHead("Protected", "Titles matching a cleanup rule but kept by a retention rule, or items you protected by hand."), statsEl, h("div", { class: "row", style: "margin-bottom:16px;gap:12px;flex-wrap:wrap;align-items:center" }, seg, instSeg, bar), body);
 }
 /** Preview shared with the dashboard, so the sub-pages open without re-reading every service. */
 async function getPreview() {
@@ -576,12 +615,12 @@ function keptBy(m) {
 	const x = /^(?:Protected by )?retention rule "(.+?)"(?::\s*(.*))?$/i.exec(m);
 	return h("div", { class: "kept" }, x ? [h("span", { class: "k" }, "Kept by"), h("strong", {}, x[1]), x[2] ? h("span", { class: "c" }, x[2]) : null] : h("strong", {}, m));
 }
-function skippedList(rows, toggle) {
+function skippedList(rows, toggle, pickBox) {
 	const sorted = [...rows].sort((a, b) => SKIP_ORDER.indexOf(skipCategory(a)[0]) - SKIP_ORDER.indexOf(skipCategory(b)[0]) || b.sizeOnDisk - a.sizeOnDisk);
 	return h("div", { class: "skip-grid" }, sorted.map((d) => {
 		const [cat, label] = skipCategory(d);
 		const badge = state(cat, label);
-		return h("div", { class: "skip-card" }, skipArt(d),
+		return h("div", { class: pickBox ? "skip-card pickable" : "skip-card" }, skipArt(d), pickBox ? pickBox(d) : null,
 			h("div", { class: "body" },
 				h("div", { class: "head" }, h("div", { class: "t", title: nameOf(d) }, nameOf(d), h("small", {}, kindLabel(d.itemType), d.certification ? [" · ", h("span", { class: "cert" }, d.certification)] : null)), h("span", { class: "sz" }, bytes(d.sizeOnDisk))),
 				cat === "protected" ? keptBy(d.message) : null,
