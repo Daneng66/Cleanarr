@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>Cleanarr</Name>
+  <Repository>ghcr.io/daneng66/cleanarr:latest</Repository>
+  <Registry>https://github.com/Daneng66/Cleanarr/pkgs/container/cleanarr</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/Daneng66/Cleanarr/issues</Support>
+  <Project>https://github.com/Daneng66/Cleanarr</Project>
+  <Overview>Smart media library cleanup and storage optimization for the *Arr ecosystem. Cleanarr connects to Sonarr and Radarr, reads watch history from Plex and requests from Seerr (Overseerr/Jellyseerr), evaluates your rules against your library, and removes, unmonitors, or deletes the files of items that match. Safe by default: dry-run, approval queue, live revalidation before every write, fail-closed rules and a full audit trail.</Overview>
+  <Category>MediaApp:Other Tools:</Category>
+  <WebUI>http://[IP]:[PORT:8080]/</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/Daneng66/Cleanarr/main/unraid/cleanarr.xml</TemplateURL>
+  <Icon>https://raw.githubusercontent.com/Daneng66/Cleanarr/main/unraid/icon.svg</Icon>
+  <ExtraParams>--user 99:100 --health-start-period=10s</ExtraParams>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled/>
+  <DonateText/>
+  <DonateLink/>
+  <Requires>Sonarr and/or Radarr. Plex and Seerr are optional.</Requires>
+  <Config Name="WebUI Port" Target="8080" Default="8080" Mode="tcp" Description="Port for the Cleanarr web UI and API." Type="Port" Display="always" Required="true" Mask="false">8080</Config>
+  <Config Name="AppData" Target="/data" Default="/mnt/user/appdata/cleanarr" Mode="rw" Description="Database, encryption key and logs." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/cleanarr</Config>
+  <Config Name="API Key" Target="CLEANARR_API_KEY" Default="" Mode="" Description="Protects the UI and API. Strongly recommended: set a long random value." Type="Variable" Display="always" Required="false" Mask="true"/>
+  <Config Name="Secret Key" Target="SECRET_KEY" Default="" Mode="" Description="Encrypts stored Sonarr/Radarr/Plex/Seerr API keys. If empty, one is generated in /data/secret.key." Type="Variable" Display="advanced" Required="false" Mask="true"/>
+  <Config Name="Log Level" Target="LOG_LEVEL" Default="info" Mode="" Description="trace, debug, info, warn or error." Type="Variable" Display="advanced" Required="false" Mask="false">info</Config>
+</Container>

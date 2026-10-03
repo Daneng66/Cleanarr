@@ -28,6 +28,13 @@ CLEANARR_API_KEY=change-me npm start
 3. **Dashboard → Preview**: see exactly what would match and why (**Why?** shows the per-condition breakdown).
 4. **Settings**: when you trust the rules, turn off dry-run. Leave **Require approval** on to review each removal.
 
+## Unraid
+
+Install from Community Apps (search "Cleanarr"), or manually: **Docker → Add Container → Template** and paste
+`https://raw.githubusercontent.com/Daneng66/Cleanarr/main/unraid/cleanarr.xml`. The image is `ghcr.io/daneng66/cleanarr`; set an API key and open the WebUI on port 8080.
+
+To list it in Community Apps, submit this repo's template at <https://forums.unraid.net/topic/38582-plug-in-community-applications/> (Selfhosters/CA submission thread).
+
 ## Safety model
 
 | Layer | Behaviour |
