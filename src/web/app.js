@@ -323,7 +323,7 @@ function soonestMs(c, cfg) {
 	return etaMs(cfg) ?? Infinity;
 }
 function posterGrid(flagged, cfg) {
-	const sorted = [...flagged].sort((a, b) => soonestMs(a, cfg) - soonestMs(b, cfg) || b.sizeOnDisk - a.sizeOnDisk);
+	const sorted = [...flagged].sort((a, b) => soonestMs(a, cfg) - soonestMs(b, cfg) || byName(a, b));
 	const grid = h("div", { class: "grid", role: "list", "aria-label": "Flagged titles, soonest then largest" });
 	const more = h("button", { type: "button", class: "more", onclick: () => paint(sorted.length) });
 	const paint = (n) => {
@@ -470,17 +470,17 @@ async function renderProtected() {
 	};
 	let paintBar = () => {};
 	const manualList = (items, toggle) => {
-		const cards = items.map((p, i) => {
+		const cards = [...items].sort((a, b) => byName({ ...info.get(key(a)), ...a }, { ...info.get(key(b)), ...b })).map((p, i) => {
 			const d = { ...info.get(key(p)), ...p };
 			const art = d.poster
 				? h("img", { src: d.poster, alt: "", class: "art", loading: "lazy", decoding: "async", onerror: (e) => e.target.replaceWith(h("span", { class: "art noart" }, d.title)) })
 				: h("span", { class: "art noart" }, d.title);
 			return h("div", { class: "skip-card pickable" }, art, pickBox(d),
 				h("div", { class: "body" },
-					h("div", { class: "head" }, h("div", { class: "t", title: nameOf(d) }, nameOf(d), h("small", {}, kindLabel(d.itemType), d.certification ? [" · ", h("span", { class: "cert" }, d.certification)] : null)), d.sizeOnDisk ? h("span", { class: "sz" }, bytes(d.sizeOnDisk)) : null),
+					h("div", { class: "head" }, h("div", { class: "t", title: nameOf(d) }, nameOf(d), h("small", {}, kindLabel(d.itemType), d.certification ? [" · ", h("span", { class: "cert" }, d.certification)] : null))),
 					keptBy(p.ignoreRetention ? "Retention rules ignored" : "Manually protected"),
 					h("div", { class: "foot" },
-						h("div", { class: "foot-left" }, h("span", { class: "row-acts" }, openInArrBtn(d), protectToggle(toggle(p), nameOf(d), !p.ignoreRetention))))));
+						h("div", { class: "foot-left" }, h("span", { class: "row-acts" }, openInArrBtn(d), protectToggle(toggle(p), nameOf(d), !p.ignoreRetention))), d.sizeOnDisk ? h("span", { class: "sz" }, bytes(d.sizeOnDisk)) : null)));
 		});
 		return h("div", { class: "skip-grid" }, cards);
 	};
@@ -493,7 +493,7 @@ async function renderProtected() {
 		const ov = new Map(items.filter((p) => p.ignoreRetention).map((p) => [key(p), p.id]));
 		paintStats(protAll, items); // headline numbers ignore the instance filter
 		const prot = protAll.filter(inScope);
-		items = items.filter(inScope);
+		items = items.filter((p) => inScope(p) && !p.ignoreRetention); // overrides ("unprotected") aren't protected, so they don't belong in the list
 		// Manual protection is deleted/recreated; retention-rule protection is overridden/restored per item.
 		const toggle = (d) => {
 			const k = key(d), manual = ids.has(k);
@@ -521,7 +521,7 @@ async function renderProtected() {
 			await Promise.all(sel.map((d) => (label === "Unprotect" ? unprotect(d) : protect(d))));
 			lastPreview = null; toast(`${label}ed ${plural(sel.length, "title")}`);
 			route(); // rule-protected cards come from the preview, so rebuild the page
-		}) }, label + " selected");
+		}) }, icon(label === "Unprotect" ? "unprotected" : "protected"), label + " selected");
 		const all = h("input", { type: "checkbox", "aria-label": "Select all", onchange: () => { picks.forEach((x) => { x.box.checked = all.checked; }); paintBar(); } });
 		const count = h("span", { class: "faint" });
 		paintBar = () => { const n = picks.filter((x) => x.box.checked).length; count.textContent = n ? `${n} selected` : ""; all.checked = n > 0 && n === picks.length; };
@@ -597,8 +597,8 @@ function skipCategory(d) {
 function protectToggle(t, name, start = true) {
 	let on = start;
 	const set = () => {
-		btn.replaceChildren(icon(on ? "unprotected" : "protected"), on ? "Unprotect" : "Protect");
-		btn.title = `${on ? "Unprotect" : "Protect"} ${name}`; btn.setAttribute("aria-pressed", String(on));
+		btn.replaceChildren(icon(on ? "unprotected" : "protected"));
+		btn.title = `${on ? "Unprotect" : "Protect"} ${name}`; btn.setAttribute("aria-label", btn.title); btn.setAttribute("aria-pressed", String(on));
 		btn.closest(".skip-card")?.style.setProperty("opacity", on ? "" : "0.55");
 	};
 	const btn = h("button", { type: "button", class: "ghost small", onclick: () => guard(btn, async () => {
@@ -615,18 +615,19 @@ function keptBy(m) {
 	const x = /^(?:Protected by )?retention rule "(.+?)"(?::\s*(.*))?$/i.exec(m);
 	return h("div", { class: "kept" }, x ? [h("span", { class: "k" }, "Kept by"), h("strong", {}, x[1]), x[2] ? h("span", { class: "c" }, x[2]) : null] : h("strong", {}, m));
 }
+const byName = (a, b) => nameOf(a).localeCompare(nameOf(b), undefined, { numeric: true, sensitivity: "base" });
 function skippedList(rows, toggle, pickBox) {
-	const sorted = [...rows].sort((a, b) => SKIP_ORDER.indexOf(skipCategory(a)[0]) - SKIP_ORDER.indexOf(skipCategory(b)[0]) || b.sizeOnDisk - a.sizeOnDisk);
+	const sorted = [...rows].sort((a, b) => SKIP_ORDER.indexOf(skipCategory(a)[0]) - SKIP_ORDER.indexOf(skipCategory(b)[0]) || byName(a, b));
 	return h("div", { class: "skip-grid" }, sorted.map((d) => {
 		const [cat, label] = skipCategory(d);
 		const badge = state(cat, label);
 		return h("div", { class: pickBox ? "skip-card pickable" : "skip-card" }, skipArt(d), pickBox ? pickBox(d) : null,
 			h("div", { class: "body" },
-				h("div", { class: "head" }, h("div", { class: "t", title: nameOf(d) }, nameOf(d), h("small", {}, kindLabel(d.itemType), d.certification ? [" · ", h("span", { class: "cert" }, d.certification)] : null)), h("span", { class: "sz" }, bytes(d.sizeOnDisk))),
+				h("div", { class: "head" }, h("div", { class: "t", title: nameOf(d) }, nameOf(d), h("small", {}, kindLabel(d.itemType), d.certification ? [" · ", h("span", { class: "cert" }, d.certification)] : null))),
 				cat === "protected" ? keptBy(d.message) : null,
 				cat === "protected" && !d.ruleName ? null : h("div", { class: cat === "protected" ? "why would" : "why", title: `${d.ruleName}: ${d.reason}` }, cat === "protected" ? "Otherwise " : null, actionTag(d.action), ` ${d.ruleName}`, cat === "protected" ? null : `: ${d.reason}`),
 				h("div", { class: "foot" },
-					h("div", { class: "foot-left" }, cat !== "protected" ? badge : null, cat !== "protected" ? h("span", { class: "row-acts" }, openInArrBtn(d), protectBtn(d)) : h("span", { class: "row-acts" }, openInArrBtn(d), toggle ? protectToggle(toggle(d), nameOf(d)) : null)))));
+					h("div", { class: "foot-left" }, cat !== "protected" ? badge : null, cat !== "protected" ? h("span", { class: "row-acts" }, openInArrBtn(d), protectBtn(d)) : h("span", { class: "row-acts" }, openInArrBtn(d), toggle ? protectToggle(toggle(d), nameOf(d)) : null)), h("span", { class: "sz" }, bytes(d.sizeOnDisk)))));
 	}));
 }
 
