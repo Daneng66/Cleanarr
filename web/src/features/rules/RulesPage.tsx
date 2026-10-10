@@ -41,7 +41,7 @@ function Rules({ rules, types, templates, instances }: Data) {
 	const editRule = useRuleEditor();
 	const cleanup = rules.filter((r) => r.mode !== "retention"), protect = rules.filter((r) => r.mode === "retention");
 
-	const changed = () => { cache.invalidate(); shell.reload(); };
+	const changed = () => { cache.rerun(); shell.reload(); };
 	const move = async (list: RuleRecord[], i: number, d: number) => {
 		const g = list.map((r) => r.id);
 		[g[i], g[i + d]] = [g[i + d]!, g[i]!];
@@ -52,7 +52,7 @@ function Rules({ rules, types, templates, instances }: Data) {
 		if (!(await dialog.confirm({ title: `Delete “${r.name}”?`, text: "The rule is removed. Its history stays in the audit trail.", action: "Delete rule", danger: true }))) return;
 		try { await api.delete(`/rules/${r.id}`); changed(); } catch (e) { toast.fail(e); }
 	};
-	const useTemplate = (t: RuleTemplate) => editRule(null, t);
+	const useTemplate =(t: RuleTemplate) => editRule(null, t);
 	const scrollToTemplates = () => {
 		const t = document.getElementById("templates");
 		t?.scrollIntoView({ behavior: "smooth" });
@@ -69,8 +69,8 @@ function Rules({ rules, types, templates, instances }: Data) {
 			{!rules.length
 				? <Panel><Empty title="No rules yet" text="Pick a template from the library below, or write your own. The dashboard previews exactly what a rule would match before anything changes." /></Panel>
 				: <>
-					<RuleSection title="Cleanup rules" sub="The first matching rule decides the action." list={cleanup} types={types} onMove={move} onEdit={(r) => editRule(r)} onRemove={remove} />
-					<RuleSection title="Protect rules" sub="Matching titles are never touched by a cleanup rule." list={protect} types={types} onMove={move} onEdit={(r) => editRule(r)} onRemove={remove} />
+					<RuleSection title="Cleanup rules" sub="The first matching rule decides the action." list={cleanup} types={types} onMove={move} onEdit={(r) => editRule(r)} onDuplicate={(r) => editRule(r, null, true)} onRemove={remove} />
+					<RuleSection title="Protect rules" sub="Matching titles are never touched by a cleanup rule." list={protect} types={types} onMove={move} onEdit={(r) => editRule(r)} onDuplicate={(r) => editRule(r, null, true)} onRemove={remove} />
 				</>}
 			<TemplatesSection templates={templates} instances={instances} types={types} onUse={useTemplate} />
 		</div>
@@ -84,16 +84,17 @@ interface SectionProps {
 	types: RuleTypeDef[];
 	onMove: (list: RuleRecord[], i: number, d: number) => void;
 	onEdit: (r: RuleRecord) => void;
+	onDuplicate: (r: RuleRecord) => void;
 	onRemove: (r: RuleRecord) => void;
 }
-function RuleSection({ title, sub, list, types, onMove, onEdit, onRemove }: SectionProps) {
+function RuleSection({ title, sub, list, types, onMove, onEdit, onDuplicate, onRemove }: SectionProps) {
 	if (!list.length) return null;
 	return (
 		<>
 			<SectionTitle title={title} grow={false}><span className="faint small">{sub}</span></SectionTitle>
 			<Panel>
 				<ul className="rules">
-					{list.map((r, i) => <RuleRow key={r.id} rule={r} index={i} last={i === list.length - 1} types={types} onMove={(d) => onMove(list, i, d)} onEdit={() => onEdit(r)} onRemove={() => onRemove(r)} />)}
+					{list.map((r, i) => <RuleRow key={r.id} rule={r} index={i} last={i === list.length - 1} types={types} onMove={(d) => onMove(list, i, d)} onEdit={() => onEdit(r)} onDuplicate={() => onDuplicate(r)} onRemove={() => onRemove(r)} />)}
 				</ul>
 			</Panel>
 		</>
@@ -107,9 +108,10 @@ interface RowProps {
 	types: RuleTypeDef[];
 	onMove: (d: number) => void;
 	onEdit: () => void;
+	onDuplicate: () => void;
 	onRemove: () => void;
 }
-function RuleRow({ rule: r, index: i, last, types, onMove, onEdit, onRemove }: RowProps) {
+function RuleRow({ rule: r, index: i, last, types, onMove, onEdit, onDuplicate, onRemove }: RowProps) {
 	const api = useApi();
 	const cache = usePreviewCache();
 	const toast = useToast();
@@ -117,7 +119,7 @@ function RuleRow({ rule: r, index: i, last, types, onMove, onEdit, onRemove }: R
 	const [enabled, setEnabled] = useState(r.enabled);
 	const toggle = async (on: boolean) => {
 		setEnabled(on);
-		try { await api.put(`/rules/${r.id}`, { enabled: on }); cache.invalidate(); } catch (e) { setEnabled(!on); toast.fail(e); }
+		try { await api.put(`/rules/${r.id}`, { enabled: on }); cache.rerun(); } catch (e) { setEnabled(!on); toast.fail(e); }
 	};
 	return (
 		<li className={enabled ? "" : "off"}>
@@ -131,6 +133,7 @@ function RuleRow({ rule: r, index: i, last, types, onMove, onEdit, onRemove }: R
 				<IconButton icon="up" label="Move up" className="ghost" disabled={i === 0} onClick={() => onMove(-1)} />
 				<IconButton icon="down" label="Move down" className="ghost" disabled={last} onClick={() => onMove(1)} />
 				<IconButton icon="edit" label={`Edit ${r.name}`} className="ghost" onClick={onEdit} />
+					<IconButton icon="copy" label={`Duplicate ${r.name}`} className="ghost" onClick={onDuplicate} />
 				<IconButton icon="trash" label={`Delete ${r.name}`} className="ghost danger" onClick={onRemove} />
 			</div>
 		</li>

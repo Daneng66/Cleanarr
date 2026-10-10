@@ -309,6 +309,20 @@ export function createStore(db: Db, enc: Encryptor, now: () => Date = () => new 
 				.all(ignoreDelay ? 1 : 0, iso(now()), limit)
 				.map(approvalRow);
 		},
+		/** Updates a still-matching approval to its current match (rule, action, reason); the countdown and safety snapshot are untouched.
+		 * A different rule or action makes any recorded failure obsolete, so it is cleared and the item goes back to waiting. */
+		restamp(id: string, m: { ruleId: string; ruleName: string; action: CleanupAction; reason: string }, rematched: boolean) {
+			db.prepare(
+				`UPDATE approvals SET rule_id = ?, rule_name = ?, action = ?, reason = ?,
+				 status = CASE WHEN ? AND status = 'failed' THEN 'pending' ELSE status END,
+				 last_error = CASE WHEN ? THEN NULL ELSE last_error END
+				 WHERE id = ? AND execution_token IS NULL`,
+			).run(m.ruleId, m.ruleName, m.action, m.reason, rematched ? 1 : 0, rematched ? 1 : 0, id);
+		},
+		/** Removes a waiting or failed approval only if it is not in flight. */
+		dequeue(id: string): boolean {
+			return db.prepare("DELETE FROM approvals WHERE id = ? AND status IN ('pending','failed') AND execution_token IS NULL").run(id).changes === 1;
+		},
 		delete(id: string) {
 			db.prepare("DELETE FROM approvals WHERE id = ?").run(id);
 		},

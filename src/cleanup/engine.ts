@@ -368,6 +368,28 @@ export function createEngine(deps: EngineDeps) {
 		return { keep, skipped: [], queued };
 	}
 
+	/**
+	 * Re-evaluates the queue against the current rules. An entry is dropped only when nothing matches it any more;
+	 * otherwise it is updated in place (rule, action, reason) and keeps its countdown. Skipped when a service
+	 * failed to load: absence isn't proof then.
+	 */
+	function dequeueStale(candidates: Candidate[], loadWarnings: string[], trigger: Trigger, actor: string, runLogId?: string) {
+		if (loadWarnings.length) return;
+		const live = new Map(candidates.map((c) => [targetKey(c.item), c] as const));
+		for (const [key, a] of store.approvals.openByTarget()) {
+			const c = live.get(key);
+			if (c) {
+				const action = actionFor(c.rule, c.item) ?? c.rule.action;
+				const rematched = c.rule.id !== a.ruleId || action !== a.action;
+				if (rematched || c.reason !== a.reason || c.rule.name !== a.ruleName) {
+					store.approvals.restamp(a.id, { ruleId: c.rule.id, ruleName: c.rule.name, action, reason: c.reason }, rematched);
+				}
+			} else if (store.approvals.dequeue(a.id)) {
+				approvalAudit(a, { correlationId: a.id, eventType: "dequeued", outcome: "info", trigger, actor, runLogId, reason: "No longer matches any active rule; re-evaluated" });
+			}
+		}
+	}
+
 	function order(candidates: Candidate[]): Candidate[] {
 		return [...candidates].sort((a, b) => a.rule.priority - b.rule.priority || b.item.sizeOnDisk - a.item.sizeOnDisk);
 	}
@@ -578,6 +600,7 @@ export function createEngine(deps: EngineDeps) {
 
 			const p = plan(snap, rules);
 			evaluated = p.evaluated;
+			if (!dryRun && !opts.only) dequeueStale(p.candidates, snap.warnings, opts.trigger, actor, runLogId);
 			const { keep, queued } = suppress(p.candidates);
 			details.push(...queued.map((c) => detail(c, "skipped", "Already has an open approval")));
 			const { only } = opts;
@@ -694,6 +717,7 @@ export function createEngine(deps: EngineDeps) {
 		const { rules, needs, warnings: rw } = activeRules();
 		const [snap, capacityBytes] = await Promise.all([loadSnapshot(needs), totalCapacity()]);
 		const p = plan(snap, rules);
+		dequeueStale(p.candidates, snap.warnings, "pickup", "system");
 		const { keep, queued } = suppress(p.candidates);
 		enqueueNewMatches(keep, store.config.get());
 		const openRows = store.approvals.openByTarget();

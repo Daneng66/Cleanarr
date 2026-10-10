@@ -666,6 +666,26 @@ const defs: RuleTypeDef[] = [
 			return F(`Requester has watched ${best.seen} of ${eps.length} episodes of ${label.toLowerCase()}`);
 		},
 	},
+	{
+		type: "watched_by_others",
+		label: "Watched by someone other than the requester",
+		group: "Requests",
+		description: "A user who isn't one of the requesters in Seerr has watched it (any episode, for seasons). Combine with NOT to protect titles other people are watching.",
+		needs: "watch+seerr",
+		fields: [],
+		schema: z.object({}),
+		evaluate(item, _p, ctx) {
+			const reqs = seerrOf(item, ctx);
+			if (!reqs) return U("Seerr data unavailable");
+			const w = watchOf(item, ctx);
+			if (!w) return U("Watch history unavailable");
+			if (!reqs.length) return F("Not requested");
+			const names = reqs.flatMap((r) => r.requesters);
+			if (!names.length) return U("Requester has no name to match against watch history");
+			const other = w.watchedBy.find((u) => !inList(u, names));
+			return check(!!other, other ? `Watched by ${other}, not the requester` : "Only the requester has watched it");
+		},
+	},
 ];
 
 function seerrOf(item: LibraryItem, ctx: EvalContext): SeerrRequest[] | null {

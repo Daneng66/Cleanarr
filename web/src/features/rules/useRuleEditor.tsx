@@ -12,10 +12,10 @@ export function useRuleEditor() {
 	const catalog = useCatalog();
 	const dialog = useDialog();
 	const toast = useToast();
-	return useCallback(async (rule?: RuleRecord | null, template?: RuleTemplate | null) => {
+	return useCallback(async (rule?: RuleRecord | null, template?: RuleTemplate | null, duplicate?: boolean) => {
 		try {
 			const [types, requesters, instances] = await Promise.all([catalog.types(), catalog.requesters(), api.get<Instance[]>("/instances").catch(() => [] as Instance[])]);
-			dialog.open(<RuleEditor rule={rule} template={template} types={types} requesters={requesters} instances={instances} />, { kind: "sheet" });
+			dialog.open(<RuleEditor rule={rule} duplicate={duplicate} template={template} types={types} requesters={requesters} instances={instances} />, { kind: "sheet" });
 		} catch (e) { toast.fail(e); }
 	}, [api, catalog, dialog, toast]);
 }

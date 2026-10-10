@@ -14,7 +14,7 @@ import { useShell } from "../../providers/ShellProvider";
 import { useToast } from "../../providers/ToastProvider";
 import { useRuleEditor } from "../rules/useRuleEditor";
 import { useInstanceEditor } from "../instances/useInstanceEditor";
-import type { Candidate, Instance, Preview, RuleRecord, RunLog, Status } from "../../types";
+import type { Candidate, Instance, Preview, RuleRecord, RunDetail, RunLog, Status } from "../../types";
 import { DriversPanel } from "./DriversPanel";
 import { LastRunPanel } from "./LastRunPanel";
 import { LibraryPanel } from "./LibraryPanel";
@@ -121,11 +121,16 @@ function Overview({ status: s }: { status: Status }) {
 				const r = await api.post<{ status: string; lastError?: string }>(`/approvals/${q.id}/approve`);
 				done = r.status === "reclaimed"; detail = r.lastError || r.status;
 			} else {
-				const r = await api.post<{ itemsRemoved: number; itemsUnmonitored: number; itemsFilesDeleted: number }>("/run", { immediate: true, only: { instanceId: c.instanceId, arrItemId: c.arrItemId, seasonNumber: c.seasonNumber ?? null } });
+				const r = await api.post<{ itemsRemoved: number; itemsUnmonitored: number; itemsFilesDeleted: number; details: RunDetail[] }>("/run", { immediate: true, only: { instanceId: c.instanceId, arrItemId: c.arrItemId, seasonNumber: c.seasonNumber ?? null } });
 				done = r.itemsRemoved + r.itemsUnmonitored + r.itemsFilesDeleted > 0;
+				detail = r.details.find((d) => d.outcome === "failed" || d.message)?.message ?? "";
 			}
 			if (done) { cache.remove(c); toast.show("Reclaimed"); }
-			else { toast.show(cfg.dryRun ? "Dry run: nothing was changed" : q ? `Not reclaimed: ${detail}` : "Nothing was reclaimed"); cache.invalidate(); shell.reload(); }
+			else {
+				if (cfg.dryRun) toast.show("Dry run: nothing was changed");
+				else toast.show(detail ? `Not reclaimed: ${detail}` : "Nothing was reclaimed", true);
+				cache.invalidate(); shell.reload();
+			}
 		} catch (e) {
 			setDeleting((d) => toggle(d, key, false));
 			throw e;
@@ -144,8 +149,10 @@ function Overview({ status: s }: { status: Status }) {
 	const reclaimAll = async () => {
 		const text = cfg.dryRun ? "This is a dry run: Cleanarr records what it would do and changes nothing." : "Matches are actioned immediately, skipping the queue wait. This can't be undone.";
 		if (!(await dialog.confirm({ title: "Reclaim now?", text, action: cfg.dryRun ? "Run dry run" : "Reclaim now" }))) return;
-		const r = await api.post<{ status: string; itemsFlagged: number; itemsRemoved: number }>("/run", { immediate: true });
-		toast.show(`Run ${r.status}: ${r.itemsFlagged} flagged, ${r.itemsRemoved} removed`);
+		const r = await api.post<{ status: string; itemsFlagged: number; itemsRemoved: number; details: RunDetail[] }>("/run", { immediate: true });
+		const failed = r.details.filter((d) => d.outcome === "failed");
+		if (failed.length) toast.show(`${failed.length} failed, ${r.itemsRemoved} removed. ${nameOf(failed[0]!)}: ${failed[0]!.message ?? "unknown error"}`, true);
+		else toast.show(`Run ${r.status}: ${r.itemsFlagged} flagged, ${r.itemsRemoved} removed`);
 		cache.invalidate();
 		shell.reload();
 	};

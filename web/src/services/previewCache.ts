@@ -28,6 +28,11 @@ export class PreviewCache {
 	invalidate() {
 		if (this.entry) this.entry = { ...this.entry, at: 0 };
 	}
+	/** Re-evaluates in the background after a rule change, so stale matches/queue entries are cleared without waiting for a visit. */
+	rerun() {
+		this.invalidate();
+		this.get(true).catch(() => { /* surfaced when the dashboard next loads */ });
+	}
 	/** Drop one reclaimed candidate without re-reading every service. */
 	remove(c: Candidate) {
 		if (!this.entry) return;

@@ -52,7 +52,7 @@ function RunsTable({ runs }: { runs: RunLog[] }) {
 									<td><TimeEl value={r.startedAt} /></td>
 									<td>{r.trigger}</td>
 									<td><span className="tag">{r.isDryRun ? "Dry run" : "Live"}</span></td>
-									<td><StateBadge state={r.status} /></td>
+									<td><StateBadge state={r.status} />{r.error ? <div className="sub bad">{r.error}</div> : null}</td>
 									<td className="num mono">{r.itemsFlagged}</td>
 									<td className="num mono">{r.itemsRemoved}</td>
 									<td className="num mono">{bytes(r.bytesReclaimed)}</td>
@@ -83,7 +83,7 @@ function AuditTable({ audit }: { audit: AuditEntry[] }) {
 									<td><StateBadge state={AUDIT_STATE[e.outcome] || "loaded"} label={e.event_type.replaceAll("_", " ")} /></td>
 									<td>{e.title}<div className="sub">{`${e.rule_name || "—"} · ${e.action}`}</div></td>
 									<td className="small">{`${e.actor} (${e.trigger})`}</td>
-									<td className="small">{e.reason}</td>
+									<td className={`small${e.outcome === "failed" ? " bad" : ""}`}>{e.reason}</td>
 								</tr>
 							))}
 						</tbody>
@@ -107,7 +107,7 @@ function DetailTable({ rows }: { rows: RunDetail[] }) {
 							<td>{d.ruleName}<div className="sub"><ActionTag action={d.action} /></div></td>
 							<td className="small">{d.reason}</td>
 							<td className="num mono">{bytes(d.sizeOnDisk)}</td>
-							<td><StateBadge state={d.outcome} />{d.message ? <div className="sub">{d.message}</div> : null}</td>
+							<td><StateBadge state={d.outcome} />{d.message ? <div className={`sub${d.outcome === "failed" ? " bad" : ""}`}>{d.message}</div> : null}</td>
 						</tr>
 					))}
 				</tbody>
@@ -118,13 +118,14 @@ function DetailTable({ rows }: { rows: RunDetail[] }) {
 
 function RunDetailsDialog({ run }: { run: RunLog }) {
 	const dialog = useDialog();
+	const failed = run.details.filter((d) => d.outcome === "failed").length;
 	return (
 		<DialogFrame title={`Run ${when(run.startedAt)}`} onClose={dialog.close} foot={<Button onClick={dialog.close}>Close</Button>}
-			lede={`${run.isDryRun ? "Dry run" : "Live"} · ${run.trigger} · ${run.itemsFlagged} flagged · ${run.itemsRemoved} removed`}>
+			lede={`${run.isDryRun ? "Dry run" : "Live"} · ${run.trigger} · ${run.itemsFlagged} flagged · ${run.itemsRemoved} removed${failed ? ` · ${failed} failed` : ""}`}>
 			{run.warnings.length || run.error ? (
 				<div className="notices">{run.warnings.map((w, i) => <Notice key={i}>{w}</Notice>)}{run.error ? <BadNotice>{run.error}</BadNotice> : null}</div>
 			) : null}
-			<DetailTable rows={run.details} />
+			<DetailTable rows={[...run.details].sort((a, b) => +(b.outcome === "failed") - +(a.outcome === "failed"))} />
 		</DialogFrame>
 	);
 }

@@ -16,6 +16,8 @@ import { ConditionGroup } from "./ConditionGroup";
 
 export interface RuleEditorProps {
 	rule?: RuleRecord | null;
+	/** Open `rule` as the starting point of a new rule instead of editing it. */
+	duplicate?: boolean;
 	template?: RuleTemplate | null;
 	types: RuleTypeDef[];
 	requesters: string[];
@@ -40,7 +42,7 @@ const toActions = (action: CleanupAction, services: Service[] | null | undefined
 };
 
 /** Create or edit a rule: a nested condition builder (or raw JSON for what it can't show), scope, and exclusions. */
-export function RuleEditor({ rule, template, types, requesters, instances }: RuleEditorProps) {
+export function RuleEditor({ rule, duplicate, template, types, requesters, instances }: RuleEditorProps) {
 	const api = useApi();
 	const cache = usePreviewCache();
 	const dialog = useDialog();
@@ -49,11 +51,12 @@ export function RuleEditor({ rule, template, types, requesters, instances }: Rul
 	const uid = useId();
 
 	const src = rule ?? (template ? { name: template.title, mode: template.mode, action: template.action, expression: template.expression, serviceFilter: template.serviceFilter, serviceLocked: template.serviceFilter?.length === 1, excludeTags: null, excludeTitles: null, actions: toActions(template.action, template.serviceFilter) } : null);
+	const edit = duplicate ? null : rule; // the saved rule being changed, if any
 	const exprIn = src?.expression;
 	const seasonOnly = !!src?.serviceLocked && src.action === "delete_season"; // season template: the action is fixed too
 	const locked: Service | null = src?.serviceLocked && src.serviceFilter?.length === 1 ? src.serviceFilter[0]! : null; // single-platform template: service is fixed
 
-	const [name, setName] = useState(src?.name || "");
+	const [name, setName] = useState(src?.name ? (duplicate ? `${src.name} (copy)` : src.name) : "");
 	const [mode, setMode] = useState<RuleMode>(src?.mode || "cleanup");
 	const [acts, setActs] = useState<RuleActions>(() => src?.actions ?? toActions(src?.action ?? "delete", src?.serviceFilter));
 	// Sonarr shows one row for every series until the admin asks for a different action on ended ones.
@@ -128,10 +131,10 @@ export function RuleEditor({ rule, template, types, requesters, instances }: Rul
 		const body = { name: name.trim(), mode, actions, expression, serviceLocked: !!locked, excludeTags: splitList(tags), excludeTitles: splitList(titleRx) };
 		setSaving(true);
 		try {
-			if (rule) await api.put(`/rules/${rule.id}`, body); else await api.post("/rules", body);
-			cache.invalidate();
+			if (edit) await api.put(`/rules/${edit.id}`, body); else await api.post("/rules", body);
+			cache.rerun();
 			close();
-			toast.show(rule ? "Rule saved" : "Rule created");
+			toast.show(edit ? "Rule saved" : "Rule created");
 			shell.navigate("rules");
 		} catch (x) {
 			setErrors((x as Error).message.split("\n").map(friendlyIssue(types)));
@@ -150,7 +153,7 @@ export function RuleEditor({ rule, template, types, requesters, instances }: Rul
 		] as Row[] : [{ id: "series", label: "Series", scope: "Sonarr · every matching series", slots: ["sonarr_continuing", "sonarr_ended"], sonarr: true } as Row]),
 	];
 	const summary = lines.map((l) => `${l.label}: ${verb(acts[l.slots[0]!])}`).join(" · ");
-	const title = rule ? "Edit rule" : template ? `New rule: ${template.title}` : "New rule";
+	const title = edit ? "Edit rule" : template ? `New rule: ${template.title}` : "New rule";
 	const lede = template ? `${template.description} Adjust the numbers to taste, then preview on the dashboard.` : "Nothing changes until a run. Preview on the dashboard before trusting a new rule.";
 	const section = (t: string, extra?: React.ReactNode) => <div className="form-section">{t}<span className="grow" />{extra}</div>;
 
@@ -160,7 +163,7 @@ export function RuleEditor({ rule, template, types, requesters, instances }: Rul
 				<div className="foot-row" hidden={confirmingDiscard}>
 					<span className="grow foot-note">{summary}</span>
 					<Button onClick={requestClose}>Cancel</Button>
-					<button ref={saveRef} type="button" className={`primary${saving ? " busy" : ""}`} disabled={saving} onClick={submit}>{rule ? "Save rule" : "Create rule"}</button>
+					<button ref={saveRef} type="button" className={`primary${saving ? " busy" : ""}`} disabled={saving} onClick={submit}>{edit ? "Save rule" : "Create rule"}</button>
 				</div>
 				<div className="foot-row confirm" hidden={!confirmingDiscard}>
 					<span className="grow">Discard your changes?</span>

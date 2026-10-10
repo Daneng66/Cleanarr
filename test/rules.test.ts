@@ -175,6 +175,14 @@ describe("seerr rules", () => {
 		it("requires both providers", () => {
 			expect(requirements(parseExpression(p("requester_watched")))).toEqual({ files: false, watch: true, seerr: true });
 		});
+		it("watched_by_others: anyone but the requester", () => {
+			const o = { type: "watched_by_others", params: {} };
+			expect(ev(o, item(), ctx(watch(["alice", "bob"]), () => [req()])).state).toBe("true");
+			expect(ev(o, item(), ctx(watch(["alice"]), () => [req()])).state).toBe("false");
+			expect(ev(o, item(), ctx(watch(["bob"]), () => [])).state).toBe("false");
+			expect(ev(o, item(), ctx(watch(["bob"]), () => [req({ requesters: [] })])).state).toBe("unknown");
+			expect(ev(o, item(), ctx(null, () => [req()])).state).toBe("unknown");
+		});
 	});
 });
 
