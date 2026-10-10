@@ -369,6 +369,13 @@ td.bad, td .sub.bad { color: var(--red); }
 .verdict + .verdict { margin-top: 10px; }
 .out-of-scope { margin-top: 10px; }
 .out-of-scope > summary { cursor: pointer; margin-bottom: 10px; }
+.rule-details { margin-top: 12px; }
+.rule-details > summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 8px; padding: 12px 0; min-height: 44px; font-weight: 600; }
+.rule-details > summary::-webkit-details-marker { display: none; }
+.rule-details > summary::before { content: ""; width: 16px; height: 16px; flex: none; background: var(--chevron) no-repeat center; transform: rotate(-90deg); transition: transform .15s var(--step); }
+.rule-details[open] > summary::before { transform: none; }
+.rule-details > summary:hover { color: var(--teal); }
+@media (prefers-reduced-motion: reduce) { .rule-details > summary::before { transition: none; } }
 .verdict .row strong { font: 600 17px/1.2 var(--cond); margin-right: 4px; }
 .x .explain { padding: 4px 0; }
 tr.xrow td { background: var(--rack-2); }
@@ -446,6 +453,11 @@ fieldset.field legend { padding: 0; }
 .tip-btn { color: var(--ink-3); }
 .tip-btn:hover { color: var(--ink); }
 .tip { position: fixed; inset: auto; margin: 0; max-height: calc(100dvh - 24px); overflow: auto; padding: 14px 16px; border: 1px solid var(--line-2); border-radius: 8px; background: var(--rack); color: var(--ink); font-size: 14px; box-shadow: 0 16px 40px -14px rgb(0 0 0 / .45); }
+.menu { position: fixed; inset: auto; margin: 0; min-width: 190px; padding: 5px; border: 1px solid var(--line-2); border-radius: 8px; background: var(--rack); box-shadow: 0 16px 40px -14px rgb(0 0 0 / .45); }
+.menu button { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 36px; padding: 0 10px; justify-content: flex-start; border-color: transparent; background: transparent; font-weight: 500; }
+.menu button:hover:not(:disabled) { background: var(--rack-2); }
+.menu button.danger:hover:not(:disabled) { background: var(--red-soft); }
+.menu hr { border: 0; border-top: 1px solid var(--line); margin: 5px 2px; }
 .tip-h { font: 600 15px/1.2 var(--cond); margin-bottom: 8px; }
 .tip dl { margin: 0; }
 .tip dt { margin: 0; }
@@ -477,6 +489,7 @@ input[aria-invalid=true] { border-color: var(--red); }
 .sk.art { aspect-ratio: 2 / 3; border-radius: var(--radius); }
 .sk.outhead { width: 62%; height: 26px; }
 .sk.rname { width: 38%; height: 18px; }
+.rule-details > .sk.rname { width: 104px; margin: 13px 0 13px 24px; }
 .sk.rbadge { width: 76px; height: 16px; }
 .sk.block { height: 180px; }
 .posters .scale .sk { margin: 0; }

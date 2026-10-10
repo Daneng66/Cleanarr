@@ -33,12 +33,12 @@ export function ExplainPanel({ item }: { item: ItemRef }) {
 	return <ExplainBody e={data} />;
 }
 
-/** Same silhouette as <Outcome> plus a few <Verdict> cards, so the section doesn't jump when data lands. */
-export function ExplainSkeleton() {
+/** Same silhouette as <Outcome> plus a few <Verdict> cards (or, when `collapsed`, the <RuleDetails> row), so the section doesn't jump when data lands. */
+export function ExplainSkeleton({ collapsed = false }: { collapsed?: boolean }) {
 	return (
 		<div className="explain" aria-busy="true" aria-label="Checking active rules">
 			<div className="outcome"><Sk kind="outhead" /><Sk kind="line short" /></div>
-			{[0, 1, 2].map((i) => (
+			{collapsed ? <div className="rule-details"><Sk kind="rname" /></div> : [0, 1, 2].map((i) => (
 				<div className="verdict" key={i}>
 					<div className="row"><Sk kind="rname" /><span className="grow" /><Sk kind="rbadge" /></div>
 				</div>
@@ -98,7 +98,17 @@ function Verdict({ r }: { r: ExplainRule }) {
 	);
 }
 
-export function ExplainBody({ e, facts = true }: { e: Explain; facts?: boolean }) {
+/** Collapsed-by-default <ExplainBody>. */
+export function RuleDetails({ e }: { e: Explain }) {
+	return (
+		<details className="rule-details">
+			<summary>Rule details</summary>
+			<ExplainBody e={e} facts={false} outOfScope={false} />
+		</details>
+	);
+}
+
+export function ExplainBody({ e, facts = true, outOfScope = true }: { e: Explain; facts?: boolean; outOfScope?: boolean }) {
 	const out = e.rules.filter((r) => !r.inScope);
 	return (
 		<div className="explain">
@@ -110,7 +120,7 @@ export function ExplainBody({ e, facts = true }: { e: Explain; facts?: boolean }
 			</div> : null}
 			<Notices items={e.warnings} />
 			{e.rules.filter((r) => r.inScope).map((r, i) => <Verdict key={i} r={r} />)}
-			{out.length ? <details className="out-of-scope"><summary className="help">{`${out.length} out of scope`}</summary>{out.map((r, i) => <Verdict key={i} r={r} />)}</details> : null}
+			{outOfScope && out.length ? <details className="out-of-scope"><summary className="help">{`${out.length} out of scope`}</summary>{out.map((r, i) => <Verdict key={i} r={r} />)}</details> : null}
 		</div>
 	);
 }

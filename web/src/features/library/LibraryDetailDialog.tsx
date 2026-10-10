@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { Art } from "../../components/media/Art";
-import { ExplainBody, ExplainSkeleton, Outcome, useExplain } from "../../components/media/Explain";
+import { ExplainSkeleton, Outcome, RuleDetails, useExplain } from "../../components/media/Explain";
 import { Cert } from "../../components/media/ItemBits";
-import { OpenInArrButton } from "../../components/media/LinkButtons";
+import { OpenInArrButton, OpenInPlexButton } from "../../components/media/LinkButtons";
 import { Button } from "../../components/ui/Button";
 import { DialogFrame } from "../../components/ui/DialogFrame";
 import { BadNotice } from "../../components/ui/Feedback";
@@ -58,6 +58,7 @@ export function LibraryDetailDialog({ d, actions, onClose }: { d: LibraryRow; ac
 		<DialogFrame title={`${d.title}${d.year ? ` (${d.year})` : ""}`} onClose={onClose} foot={
 			<div className="foot-row">
 				<OpenInArrButton item={d} className="small" />
+				<OpenInPlexButton item={d} className="small" />
 				<Button icon={protectedId ? "unprotected" : "protected"} className="small" onAction={async () => {
 					const id = await actions.setProtected(d, !protectedId, protectedId);
 					setProtectedId(id);
@@ -84,7 +85,7 @@ export function LibraryDetailDialog({ d, actions, onClose }: { d: LibraryRow; ac
 				</div>
 				<div className="x">
 					<h3 className="sect">Against your active rules</h3>
-					{error ? <BadNotice>{error.message}</BadNotice> : explain ? <><Outcome e={explain} manuallyProtected={!!protectedId} /><ExplainBody e={explain} facts={false} /></> : <ExplainSkeleton />}
+					{error ? <BadNotice>{error.message}</BadNotice> : explain ? <><Outcome e={explain} manuallyProtected={!!protectedId} /><RuleDetails e={explain} /></> : <ExplainSkeleton collapsed />}
 				</div>
 			</div>
 		</DialogFrame>
