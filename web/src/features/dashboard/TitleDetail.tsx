@@ -1,16 +1,16 @@
-import { useState } from "react";
 import { Art } from "../../components/media/Art";
 import { Cert } from "../../components/media/ItemBits";
-import { ExplainPanel, WhyButton } from "../../components/media/Explain";
+import { useExplain } from "../../components/media/Explain";
 import { OpenInArrButton, OpenInPlexButton } from "../../components/media/LinkButtons";
 import { ProtectButton } from "../../components/media/ProtectButtons";
-import { Button } from "../../components/ui/Button";
+import type { ReactNode } from "react";
+import { Button, IconButton } from "../../components/ui/Button";
 import { Icon } from "../../components/ui/Icon";
 import { Sk } from "../../components/ui/Skeleton";
 import { StateBadge } from "../../components/ui/StateBadge";
-import { ActionTag, actionLabel } from "../../components/ui/Tags";
+import { ActionTag } from "../../components/ui/Tags";
 import { DialogFrame } from "../../components/ui/DialogFrame";
-import { ago, bytes, bytesParts, frees, nameOf, plural, seasonName } from "../../lib/format";
+import { ago, bytes, bytesParts, frees, kindLabel, nameOf, plural, seasonName } from "../../lib/format";
 import { plainReason } from "../../lib/protection";
 import { etaText } from "../../lib/reclaim";
 import { useApi } from "../../providers/ApiProvider";
@@ -27,14 +27,16 @@ function QueueStatus({ c, cfg }: { c: Candidate; cfg: Config }) {
 	}
 	return (
 		<div className="queue-status">
-			{q.status === "failed" ? <StateBadge state="failed" label="Failed, retrying next run" /> : <StateBadge state="pending" label={`Queued · removes ${ago(q.executeAfter)}`} />}
+			{q.status === "failed" ? <StateBadge state="failed" label="Failed, retrying next run" />
+				: q.status === "reclaimed" || q.status === "running" || q.status === "blocked" ? <StateBadge state={q.status} />
+				: <StateBadge state="pending" label={`Queued · will be reclaimed ${new Date(q.executeAfter).getTime() <= Date.now() ? "on the next run" : ago(q.executeAfter)}`} />}
 			{q.lastError ? <div className="help">{q.lastError}</div> : null}
 		</div>
 	);
 }
 
 /** What the action will do to this title, stated plainly. Series and seasons count their episode files from Sonarr. */
-function ImpactBlock({ c }: { c: Candidate }) {
+function ImpactBlock({ c, head }: { c: Candidate; head?: ReactNode }) {
 	const api = useApi();
 	const movie = c.itemType === "movie";
 	const q = c.seasonNumber != null ? `?season=${c.seasonNumber}` : "";
@@ -54,13 +56,14 @@ function ImpactBlock({ c }: { c: Candidate }) {
 		}[c.action];
 	};
 	const cls = `impact ${frees(c) ? "destroys" : ""}`;
-	if (movie) return <div className={cls} role="status"><p>{say()}</p></div>;
-	if (eps.error) return <div className={cls} role="status"><p>{say()}</p><div className="rows faint small">Couldn't count episodes in Sonarr right now.</div></div>;
-	if (!eps.data) return <div className={cls} role="status"><p>{say()}</p><div className="rows"><Sk kind="line short" /></div></div>;
+	if (movie) return <div className={cls} role="status">{head}<p>{say()}</p></div>;
+	if (eps.error) return <div className={cls} role="status">{head}<p>{say()}</p><div className="rows faint small">Couldn't count episodes in Sonarr right now.</div></div>;
+	if (!eps.data) return <div className={cls} role="status">{head}<p>{say()}</p><div className="rows"><Sk kind="line short" /></div></div>;
 	const seasons = eps.data;
 	const k = seasons.reduce((t, s) => t + s.episodes.length, 0);
 	return (
 		<div className={cls} role="status">
+			{head}
 			<p>{say(k, seasons)}</p>
 			{seasons.length > 1 && c.action !== "unmonitor" ? (
 				<div className="rows">{seasons.map((s) => <div key={s.number}><span>{seasonName(s.number)}</span><span>{plural(s.episodes.length, "episode")}</span><span>{bytes(s.size)}</span></div>)}</div>
@@ -69,15 +72,19 @@ function ImpactBlock({ c }: { c: Candidate }) {
 	);
 }
 
-/** One ticked row per satisfied sub-condition the server sent with the candidate. */
-function MatchedTree({ c }: { c: Candidate }) {
+/** The rule that flagged it, laid out like a verdict in the library details: name, action, badge, then one ticked row per satisfied condition. */
+function MatchedRule({ c }: { c: Candidate }) {
 	const rows = c.reasons?.length ? c.reasons : [{ text: plainReason(c.reason) }];
 	return (
-		<dd>
-			<ul className="tree flat">
-				{rows.map((r, i) => <li key={i}><span className="st state yes" style={{ font: "inherit", whiteSpace: "normal" }}><Icon name="check" /><span>{r.text}</span></span></li>)}
-			</ul>
-		</dd>
+		<section className="matched" aria-label="Matched rule">
+			<h3 className="sect">Matched rule</h3>
+			<div className="verdict">
+				<div className="row"><strong>{c.ruleName}</strong><ActionTag action={c.action} /><span className="grow" /><StateBadge state="matches" /></div>
+				<ul className="tree">
+					{rows.map((r, i) => <li key={i}><span className="st state yes" style={{ font: "inherit", whiteSpace: "normal" }}><Icon name="check" /><span>{r.text}</span></span></li>)}
+				</ul>
+			</div>
+		</section>
 	);
 }
 
@@ -88,41 +95,53 @@ export interface TitleDetailProps {
 	/** Reclaims just this title; the caller owns confirmation and bookkeeping. */
 	onReclaim: (c: Candidate) => Promise<void>;
 }
-export function TitleDetail({ c, cfg, onProtectChange, onReclaim }: TitleDetailProps) {
-	const [why, setWhy] = useState(false);
+export function TitleDetail({ c, cfg }: Pick<TitleDetailProps, "c" | "cfg">) {
 	const [n, u] = bytesParts(c.sizeOnDisk);
-	const reclaimable = !(c.queue && c.queue.status === "reclaimed");
+	const { data: explain } = useExplain(c);
+	// Sonarr folder names carry the TVDB id as "{tvdb-123}": show it as a link instead of in the path.
+	const tvdbId = explain?.item.path?.match(/\{tvdb-(\d+)\}/)?.[1];
+	const path = explain?.item.path?.replace(/\s*\{tvdb-\d+\}/g, "");
 	return (
 		<div className="detail">
 			<Art src={c.poster} title={c.title} imgClass="thumb" fallbackClass="thumb noart" as="div" />
 			<div className="main">
 				<div className="fig"><span className="n">{n}</span><span className="u">{u}</span><ActionTag action={c.action} /></div>
-				<QueueStatus c={c} cfg={cfg} />
-				<ImpactBlock c={c} />
-				<dl className="basis">
-					<dt>Rated</dt><dd>{c.certification ? <Cert value={c.certification} /> : <span className="faint">Not rated</span>}</dd>
-					<dt>Rule</dt><dd>{c.ruleName}</dd>
-					<dt>Matched</dt><MatchedTree c={c} />
+				<dl className="basis props">
+					<dt>Type</dt><dd>{kindLabel(c.itemType)}</dd>
+					{c.seasonNumber != null ? <><dt>Season</dt><dd>{seasonName(c.seasonNumber)}</dd></> : null}
+					{c.year ? <><dt>Year</dt><dd>{c.year}</dd></> : null}
+					{c.certification ? <><dt>Rated</dt><dd><Cert value={c.certification} /></dd></> : null}
+					{explain ? <><dt>Monitored</dt><dd>{explain.item.monitored ? "Yes" : "No"}</dd></> : null}
+					{path ? <><dt className="path">Path</dt><dd className="path">{path}</dd></> : null}
 				</dl>
-				<div className="acts">
-					<WhyButton item={c} open={why} onToggle={() => setWhy(!why)} />
+				<div className="links">
 					<OpenInArrButton item={c} className="small" />
 					<OpenInPlexButton item={c} className="small" />
-					<ProtectButton item={c} className="small" onChange={onProtectChange} />
-					{reclaimable ? <Button icon="trash" className="small danger" onAction={() => onReclaim(c)}>{`${actionLabel(c.action) === c.action ? "Run" : actionLabel(c.action)} now`}</Button> : null}
+					{tvdbId ? <IconButton icon="tvdb" label="Open in TVDB" className="small" onClick={() => window.open(`https://www.thetvdb.com/?tab=series&id=${tvdbId}`, "_blank", "noopener")} /> : null}
 				</div>
 			</div>
-			{why ? <div className="x"><ExplainPanel item={c} /></div> : null}
+			<div className="x">
+				{cfg.dryRun ? <p className="mode"><b>Dry run.</b> Nothing is deleted; Cleanarr only records what it would do.</p> : null}
+				<ImpactBlock c={c} head={<QueueStatus c={c} cfg={cfg} />} />
+				<MatchedRule c={c} />
+			</div>
 		</div>
 	);
 }
 
-/** The modal around <TitleDetail>. */
-export function TitleDetailDialog(props: TitleDetailProps) {
+/** The modal around <TitleDetail>; the footer holds only the two decisions. The links sit with the facts, and the header X closes. */
+export function TitleDetailDialog({ c, cfg, onProtectChange, onReclaim }: TitleDetailProps) {
 	const dialog = useDialog();
+	const reclaimable = !(c.queue && c.queue.status === "reclaimed");
+	const label = cfg.dryRun ? "Dry run now" : "Reclaim now";
 	return (
-		<DialogFrame title={nameOf(props.c)} onClose={dialog.close} foot={<Button onClick={dialog.close}>Close</Button>}>
-			<TitleDetail {...props} />
+		<DialogFrame title={nameOf(c)} onClose={dialog.close} foot={
+			<div className="foot-row">
+				<ProtectButton item={c} className="small" onChange={onProtectChange} />
+				{reclaimable ? <Button icon="trash" className={`small${cfg.dryRun ? "" : " danger"}`} onAction={() => onReclaim(c)}>{label}</Button> : null}
+			</div>
+		}>
+			<TitleDetail c={c} cfg={cfg} />
 		</DialogFrame>
 	);
 }

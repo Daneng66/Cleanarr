@@ -18,13 +18,13 @@ export function etaText(cfg?: Config | null): string | null {
 	const ms = etaMs(cfg);
 	return ms == null ? null : `Removes in ~${daysUntil(ms)} d`;
 }
-/** Compact "Xd" / "Due" / "Retry" for the poster's corner badge. */
+/** Compact "Xd" / "Next run" / "Retry" for the poster's corner badge. */
 export function countdownBadge(c: Candidate, cfg?: Config | null): string | null {
 	const q = c.queue;
 	if (q) {
 		if (q.status === "failed") return "Retry";
 		const d = daysUntil(new Date(q.executeAfter).getTime());
-		return d === 0 ? "Due" : `${d}d`;
+		return d === 0 ? "Next run" : `${d}d`;
 	}
 	const ms = etaMs(cfg);
 	return ms == null ? null : `~${daysUntil(ms)}d`;

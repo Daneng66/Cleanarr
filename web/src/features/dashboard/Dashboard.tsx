@@ -4,7 +4,6 @@ import { Button } from "../../components/ui/Button";
 import { Notice, Notices } from "../../components/ui/Feedback";
 import { Readout, ReadoutSkeleton } from "../../components/ui/Readout";
 import { Sk } from "../../components/ui/Skeleton";
-import { actionLabel } from "../../components/ui/Tags";
 import { useAsync } from "../../hooks/useAsync";
 import { usePreview } from "../../hooks/usePreview";
 import { nameOf, plural, sum } from "../../lib/format";
@@ -110,9 +109,9 @@ function Overview({ status: s }: { status: Status }) {
 	/** Reclaim this one title now. Queued items go through their approval; unqueued ones through a single-title run. */
 	const reclaimOne = async (c: Candidate) => {
 		const q = c.queue;
-		const label = actionLabel(c.action);
-		const title = c.action === "delete_files" ? `Delete files for “${nameOf(c)}” now?` : `${label} “${nameOf(c)}” now?`;
-		if (!(await dialog.confirm({ title, text: "Re-checked against live data first, and blocked if anything changed.", action: `${label} now`, danger: true }))) return;
+		const title = `Reclaim “${nameOf(c)}” now?`;
+		const text = cfg.dryRun ? "This is a dry run: Cleanarr records what it would do and changes nothing." : "Re-checked against live data first, and blocked if anything changed. This can't be undone.";
+		if (!(await dialog.confirm({ title, text, action: cfg.dryRun ? "Run dry run" : "Reclaim now", danger: !cfg.dryRun }))) return;
 		const key = candidateKey(c);
 		dialog.close();
 		setDeleting((d) => toggle(d, key, true));
@@ -126,7 +125,7 @@ function Overview({ status: s }: { status: Status }) {
 				done = r.itemsRemoved + r.itemsUnmonitored + r.itemsFilesDeleted > 0;
 			}
 			if (done) { cache.remove(c); toast.show("Reclaimed"); }
-			else { toast.show(q ? `Not reclaimed: ${detail}` : "Nothing was reclaimed"); cache.invalidate(); shell.reload(); }
+			else { toast.show(cfg.dryRun ? "Dry run: nothing was changed" : q ? `Not reclaimed: ${detail}` : "Nothing was reclaimed"); cache.invalidate(); shell.reload(); }
 		} catch (e) {
 			setDeleting((d) => toggle(d, key, false));
 			throw e;

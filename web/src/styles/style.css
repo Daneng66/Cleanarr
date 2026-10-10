@@ -224,14 +224,15 @@ input[type=checkbox] { accent-color: var(--ink); width: 18px; height: 18px; min-
 .detail .thumb { width: 100%; aspect-ratio: 2 / 3; object-fit: cover; border-radius: var(--radius); box-shadow: var(--shadow); background: var(--well); }
 .detail .thumb.noart { display: grid; place-items: center; padding: 10px; text-align: center; font: 600 14px/1.2 var(--cond); color: var(--ink-2); }
 .detail .fig { display: flex; align-items: baseline; gap: 6px; font-family: var(--cond); line-height: 1; }
-.detail .fig .n { font-size: 46px; font-weight: 700; letter-spacing: -.02em; }
-.detail .fig .u { font-size: 20px; font-weight: 600; color: var(--ink-2); }
+.detail .fig .n { font-size: 32px; font-weight: 700; letter-spacing: -.02em; }
+.detail .fig .u { font-size: 16px; font-weight: 600; color: var(--ink-2); }
 .detail .fig .tag { margin-left: 10px; align-self: center; }
 .queue-status { margin-top: 14px; }
+.impact .queue-status { margin: 0 0 10px; }
 .queue-status .help { margin-top: 6px; }
 .impact { margin-top: 16px; padding: 12px 14px; border-radius: var(--radius); background: var(--rack-2); }
 .impact.destroys { background: var(--red-soft); }
-.impact p { margin: 0; font-weight: 600; text-wrap: pretty; }
+.impact p { margin: 0; font-size: 17px; line-height: 1.4; font-weight: 600; text-wrap: pretty; }
 .impact .rows { margin-top: 10px; }
 .impact .rows > div { display: grid; grid-template-columns: minmax(0, 1fr) auto 72px; gap: 16px; padding: 6px 0; border-top: 1px solid color-mix(in srgb, var(--ink) 12%, transparent); font-size: 14px; }
 .impact .rows > div span:not(:first-child) { text-align: right; color: var(--ink-2); }
@@ -252,7 +253,20 @@ input[type=checkbox] { accent-color: var(--ink); width: 18px; height: 18px; min-
 	.detail .basis { grid-template-columns: auto minmax(0, 1fr) auto minmax(0, 1fr); gap: 4px 18px; }
 }
 .cert { display: inline-block; padding: 1px 6px; border: 1px solid var(--line-2); border-radius: 3px; font: 600 13px/1.4 var(--cond); letter-spacing: .03em; }
-.detail .acts { display: flex; gap: 8px; }
+.detail .matched { margin: 16px 0; }
+.detail .basis.props { margin-bottom: 0; }
+.detail .basis dt.path { grid-column: 1; }
+.detail .basis dd.path { grid-column: 2 / -1; font: 500 12.5px/1.4 var(--mono); overflow-wrap: anywhere; }
+.detail .mode { margin: 0 0 12px; font-size: 14px; color: var(--ink-2); text-wrap: pretty; }
+.detail .mode b { color: var(--ink); }
+.detail .links { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.detail .mode + .queue-status, .detail .mode + .impact { margin-top: 0; }
+.detail .seasons { margin-top: 18px; }
+.detail .seasons ul { list-style: none; margin: 0; padding: 0; }
+.detail .seasons li { display: grid; grid-template-columns: minmax(0, 1fr) auto 76px; gap: 16px; align-items: baseline; padding: 8px 0; border-top: 1px solid var(--line); font-size: 14px; font-variant-numeric: tabular-nums; }
+.detail .seasons .nm { font-weight: 600; }
+.detail .seasons .ct { color: var(--ink-3); text-align: right; }
+.detail .seasons .sz { text-align: right; }
 .detail > .x { grid-column: 1 / -1; padding-top: 16px; border-top: 1px solid var(--line); }
 .vol { display: inline-block; padding: 2px 5px; border-radius: 2px; background: var(--label); color: var(--label-ink); box-shadow: inset 0 0 0 1px var(--line-2); font: 500 11px/1.2 var(--mono); letter-spacing: .08em; vertical-align: 1px; }
 .nw { white-space: nowrap; }
@@ -478,10 +492,9 @@ input[aria-invalid=true] { border-color: var(--red); }
 	.readout .acts button { flex: 1; min-height: 44px; }
 	.posters .grid { grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 14px 10px; }
 	.detail { grid-template-columns: 84px minmax(0, 1fr); gap: 16px; }
-	.detail .fig .n { font-size: 36px; }
-	.detail .fig .u { font-size: 16px; }
+	.detail .fig .n { font-size: 28px; }
+	.detail .fig .u { font-size: 14px; }
 	.skip-grid { grid-template-columns: 1fr; }
-	.detail .acts button { min-height: 44px; }
 	.drivers li { grid-template-columns: minmax(0, 1fr) auto; }
 	.drivers .bar { grid-column: 1 / -1; grid-row: 2; }
 	.rules li { grid-template-columns: 22px auto minmax(0, 1fr); gap: 12px; }
@@ -593,4 +606,3 @@ input[aria-invalid=true] { border-color: var(--red); }
 .grp-add { display: flex; flex-wrap: wrap; gap: 4px 8px; margin-top: 14px; }
 .grp.sub > .grp-add { margin-bottom: 0; }
 .seg.wrap { flex-wrap: wrap; }
-.tree.flat { margin: 0; }
