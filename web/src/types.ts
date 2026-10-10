@@ -2,6 +2,7 @@
 export type Service = "sonarr" | "radarr";
 export type InstanceType = Service | "plex" | "seerr";
 export type CleanupAction = "delete" | "unmonitor" | "delete_files" | "delete_season";
+export type RuleActions = Record<"radarr" | "sonarr_continuing" | "sonarr_ended", CleanupAction | null>;
 export type RuleMode = "cleanup" | "retention";
 export type Outcome = "flagged" | "pending" | "removed" | "unmonitored" | "files_deleted" | "skipped" | "blocked" | "failed";
 
@@ -143,6 +144,7 @@ export interface RuleRecord {
 	enabled: boolean;
 	mode: RuleMode;
 	action: CleanupAction;
+	actions?: RuleActions;
 	expression: Expr;
 	serviceFilter: Service[] | null;
 	excludeTags: string[] | null;

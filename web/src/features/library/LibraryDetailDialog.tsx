@@ -1,8 +1,10 @@
 import { useState } from "react";
 import { Art } from "../../components/media/Art";
+import { ExplainBody, ExplainSkeleton, Outcome, useExplain } from "../../components/media/Explain";
 import { OpenInArrButton } from "../../components/media/LinkButtons";
 import { Button } from "../../components/ui/Button";
 import { DialogFrame } from "../../components/ui/DialogFrame";
+import { BadNotice } from "../../components/ui/Feedback";
 import { StateBadge } from "../../components/ui/StateBadge";
 import { bytesParts, kindLabel, when } from "../../lib/format";
 import { SERVICES } from "../../lib/services";
@@ -13,6 +15,7 @@ import type { LibraryActions } from "./useLibraryActions";
 export function LibraryDetailDialog({ d, actions, onClose }: { d: LibraryRow; actions: LibraryActions; onClose: () => void }) {
 	const toast = useToast();
 	const [protectedId, setProtectedId] = useState(d.protectedId);
+	const { data: explain, error } = useExplain(d);
 	const [n, u] = bytesParts(d.sizeOnDisk);
 	const dd = (k: string, v: string | string[] | null | undefined) =>
 		v == null || v === "" || (Array.isArray(v) && !v.length) ? null : <><dt>{k}</dt><dd>{Array.isArray(v) ? v.join(", ") : v}</dd></>;
@@ -40,10 +43,14 @@ export function LibraryDetailDialog({ d, actions, onClose }: { d: LibraryRow; ac
 							setProtectedId(id);
 							toast.show(`${id ? "Protected" : "Unprotected"} ${d.title}`);
 						}}>{protectedId ? "Unprotect" : "Protect"}</Button>
-						{d.monitored ? <Button icon="unprotected" className="small" onAction={() => act("unmonitor")}>Unmonitor</Button> : null}
+						{d.monitored ? <Button icon="unmonitor" className="small" onAction={() => act("unmonitor")}>Unmonitor</Button> : null}
 						{d.hasFile || d.fileCount ? <Button icon="trash" className="small" onAction={() => act("delete_files")}>Delete files</Button> : null}
 						<Button icon="trash" className="small danger" onAction={() => act("delete")}>Delete</Button>
 					</div>
+				</div>
+				<div className="x">
+					<h3 className="sect">Against your active rules</h3>
+					{error ? <BadNotice>{error.message}</BadNotice> : explain ? <><Outcome e={explain} manuallyProtected={!!protectedId} /><ExplainBody e={explain} facts={false} /></> : <ExplainSkeleton />}
 				</div>
 			</div>
 		</DialogFrame>

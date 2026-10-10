@@ -3,6 +3,8 @@ export type InstanceType = Service | "plex" | "seerr";
 export type ItemKind = "movie" | "series" | "season";
 /** delete_season: delete one season's episode files and unmonitor that season. Only rules with it see season items. */
 export type CleanupAction = "delete" | "unmonitor" | "delete_files" | "delete_season";
+/** What a rule does per slot: movies, and Sonarr series split by status ("ended" vs everything else). null = leave alone. Only Sonarr slots may be delete_season. */
+export type RuleActions = Record<"radarr" | "sonarr_continuing" | "sonarr_ended", CleanupAction | null>;
 export type RuleMode = "cleanup" | "retention";
 export type Trigger = "scheduled" | "manual" | "approval" | "retry" | "queue" | "pickup";
 
@@ -112,8 +114,12 @@ export interface RuleRecord {
 	enabled: boolean;
 	priority: number;
 	mode: RuleMode;
+	/** Source of truth for what the rule does. For retention rules a non-null slot means "protect". */
+	actions: RuleActions;
+	/** Derived from `actions`: the first non-null action, for display. */
 	action: CleanupAction;
 	expression: unknown;
+	/** Derived from `actions`: services with any action, null for both. */
 	serviceFilter: Service[] | null;
 	instanceFilter: string[] | null;
 	excludeTags: string[] | null;

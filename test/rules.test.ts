@@ -105,7 +105,7 @@ describe("expression validation", () => {
 });
 
 describe("filters", () => {
-	const base: RuleRecord = { id: "r", name: "r", enabled: true, priority: 0, mode: "cleanup", action: "delete", expression: {}, serviceFilter: null, instanceFilter: null, excludeTags: null, excludeTitles: null, serviceLocked: false };
+	const base: RuleRecord = { id: "r", name: "r", enabled: true, priority: 0, mode: "cleanup", action: "delete", actions: { radarr: "delete", sonarr_continuing: "delete", sonarr_ended: "delete" }, expression: {}, serviceFilter: null, instanceFilter: null, excludeTags: null, excludeTitles: null, serviceLocked: false };
 	it("excludes by tag label, title pattern, service and instance", () => {
 		const tagged = item({ tags: [1] });
 		expect(passesFilters(tagged, { ...base, excludeTags: ["KEEP"] }).ok).toBe(false);

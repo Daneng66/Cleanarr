@@ -141,6 +141,8 @@ CREATE INDEX audit_created ON audit_events (created_at);
 const MIGRATIONS: string[] = [
 	"ALTER TABLE config ADD COLUMN kids_max_age INTEGER NOT NULL DEFAULT 12",
 	"ALTER TABLE rules ADD COLUMN service_locked INTEGER NOT NULL DEFAULT 0",
+	"ALTER TABLE rules ADD COLUMN action_overrides TEXT",
+	"ALTER TABLE rules ADD COLUMN actions TEXT",
 ];
 
 export function openDb(path: string): Db {

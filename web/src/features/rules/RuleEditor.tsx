@@ -11,7 +11,7 @@ import { useApi, usePreviewCache } from "../../providers/ApiProvider";
 import { useDialog, useDialogCancel } from "../../providers/DialogProvider";
 import { useShell } from "../../providers/ShellProvider";
 import { useToast } from "../../providers/ToastProvider";
-import type { CleanupAction, Expr, Instance, RuleMode, RuleRecord, RuleTemplate, RuleTypeDef, Service } from "../../types";
+import type { CleanupAction, RuleActions, Expr, Instance, RuleMode, RuleRecord, RuleTemplate, RuleTypeDef, Service } from "../../types";
 import { ConditionGroup } from "./ConditionGroup";
 
 export interface RuleEditorProps {
@@ -28,7 +28,16 @@ const ACTIONS: Array<[CleanupAction, string]> = [
 	["delete_season", "Delete season: one season's files, then unmonitor it (Sonarr)"],
 	["unmonitor", "Unmonitor only (frees no space)"],
 ];
-type Scope = "all" | Service;
+const SLOTS: Array<[keyof RuleActions, string, Service]> = [
+	["radarr", "Movies (Radarr)", "radarr"],
+	["sonarr_continuing", "Continuing series (Sonarr)", "sonarr"],
+	["sonarr_ended", "Ended series (Sonarr)", "sonarr"],
+];
+/** A single action plus service filter (templates, older rules) as per-slot actions. */
+const toActions = (action: CleanupAction, services: Service[] | null | undefined): RuleActions => {
+	const on = (s: Service) => !services?.length || services.includes(s);
+	return { radarr: on("radarr") && action !== "delete_season" ? action : null, sonarr_continuing: on("sonarr") ? action : null, sonarr_ended: on("sonarr") ? action : null };
+};
 
 /** Create or edit a rule: a nested condition builder (or raw JSON for what it can't show), scope, and exclusions. */
 export function RuleEditor({ rule, template, types, requesters, instances }: RuleEditorProps) {
@@ -39,19 +48,20 @@ export function RuleEditor({ rule, template, types, requesters, instances }: Rul
 	const shell = useShell();
 	const uid = useId();
 
-	const src = rule ?? (template ? { name: template.title, mode: template.mode, action: template.action, expression: template.expression, serviceFilter: template.serviceFilter, serviceLocked: template.serviceFilter?.length === 1, excludeTags: null, excludeTitles: null } : null);
+	const src = rule ?? (template ? { name: template.title, mode: template.mode, action: template.action, expression: template.expression, serviceFilter: template.serviceFilter, serviceLocked: template.serviceFilter?.length === 1, excludeTags: null, excludeTitles: null, actions: toActions(template.action, template.serviceFilter) } : null);
 	const exprIn = src?.expression;
 	const seasonOnly = !!src?.serviceLocked && src.action === "delete_season"; // season template: the action is fixed too
 	const locked: Service | null = src?.serviceLocked && src.serviceFilter?.length === 1 ? src.serviceFilter[0]! : null; // single-platform template: service is fixed
 
 	const [name, setName] = useState(src?.name || "");
 	const [mode, setMode] = useState<RuleMode>(src?.mode || "cleanup");
-	const [action, setAction] = useState<CleanupAction>(src?.action || "delete");
+	const [acts, setActs] = useState<RuleActions>(() => src?.actions ?? toActions(src?.action ?? "delete", src?.serviceFilter));
+	// Sonarr shows one row for every series until the admin asks for a different action on ended ones.
+	const [splitEnded, setSplitEnded] = useState(() => { const a = src?.actions ?? toActions(src?.action ?? "delete", src?.serviceFilter); return a.sonarr_continuing !== a.sonarr_ended; });
 	const [root, setRoot] = useState<GroupNode>(() => newGroup(exprIn && buildable(exprIn) ? exprIn : undefined));
 	const [jsonMode, setJsonMode] = useState(!!exprIn && !buildable(exprIn));
 	const [json, setJson] = useState(() => JSON.stringify(exprIn || DEFAULT_LEAF, null, 2));
 	const [jsonErr, setJsonErr] = useState<string | null>(null);
-	const [service, setService] = useState<Scope>(locked || (src?.serviceFilter?.length === 1 ? src.serviceFilter[0]! : "all"));
 	const [tags, setTags] = useState((src?.excludeTags || []).join(", "));
 	const [titleRx, setTitleRx] = useState((src?.excludeTitles || []).join(", "));
 	const [nameErr, setNameErr] = useState<string | null>(null);
@@ -64,21 +74,18 @@ export function RuleEditor({ rule, template, types, requesters, instances }: Rul
 	const saveRef = useRef<HTMLButtonElement>(null);
 	const keepRef = useRef<HTMLButtonElement>(null);
 
-	const avail = useMemo(() => {
-		const s = new Set<string>(instances.filter((i) => i.enabled && (i.type === "radarr" || i.type === "sonarr")).map((i) => i.type));
-		src?.serviceFilter?.forEach((v) => s.add(v)); // keep a saved rule's current service selectable
-		return s;
-	}, [instances, src]);
-	const serviceOptions = (["all", "radarr", "sonarr"] as const)
-		.filter((v) => (locked ? v === locked : v === "all" ? avail.size > 1 : avail.has(v)))
-		.map((v) => [v, v === "all" ? "All" : v === "radarr" ? "Radarr" : "Sonarr"] as const);
+	// Rows for services with a configured instance, plus any a saved rule already acts on. A template's service is fixed.
+	const rows = useMemo(() => {
+		const have = new Set<string>(instances.filter((i) => i.enabled && (i.type === "radarr" || i.type === "sonarr")).map((i) => i.type));
+		return SLOTS.filter(([k, , sv]) => (locked ? sv === locked : have.has(sv) || !!src?.actions?.[k] || (!have.size && !src)));
+	}, [instances, src, locked]);
 
 	/** The expression as currently edited; throws on invalid JSON. */
 	const buildExpr = (): Expr => (jsonMode ? JSON.parse(json) : groupToExpr(root, types) || DEFAULT_LEAF);
 	const snapshot = () => {
 		let e: string;
 		try { e = JSON.stringify(buildExpr()); } catch { e = json; }
-		return JSON.stringify([name, mode, action, e, service, tags, titleRx]);
+		return JSON.stringify([name, mode, acts, e, tags, titleRx]);
 	};
 	const initial = useRef<string>(undefined);
 	initial.current ??= snapshot();
@@ -115,7 +122,10 @@ export function RuleEditor({ rule, template, types, requesters, instances }: Rul
 		let expression: Expr;
 		try { expression = buildExpr(); }
 		catch (x) { if (jsonMode) return setJsonErr(`Invalid JSON: ${(x as Error).message}`); return setErrors([(x as Error).message]); }
-		const body = { name: name.trim(), mode, action, expression, serviceFilter: service === "all" ? null : [service], serviceLocked: !!locked, excludeTags: splitList(tags), excludeTitles: splitList(titleRx) };
+		const shown = new Set(rows.map(([k]) => k));
+		const actions = Object.fromEntries(SLOTS.map(([k]) => [k, shown.has(k) ? acts[k] : null])) as RuleActions;
+		if (!Object.values(actions).some(Boolean)) return setErrors(["Pick an action for at least one of movies, continuing series or ended series."]);
+		const body = { name: name.trim(), mode, actions, expression, serviceLocked: !!locked, excludeTags: splitList(tags), excludeTitles: splitList(titleRx) };
 		setSaving(true);
 		try {
 			if (rule) await api.put(`/rules/${rule.id}`, body); else await api.post("/rules", body);
@@ -129,6 +139,17 @@ export function RuleEditor({ rule, template, types, requesters, instances }: Rul
 	}
 
 	const protect = mode === "retention";
+	const verb = (a: CleanupAction | null) => (a === null ? "leave alone" : protect ? "protect" : (ACTIONS.find(([v]) => v === a)?.[1].split(/[:,]/)[0] ?? a).toLowerCase());
+	const hasSonarr = rows.some(([, , sv]) => sv === "sonarr");
+	type Row = { id: string; label: string; scope: string; slots: Array<keyof RuleActions>; sonarr: boolean };
+	const lines: Row[] = [
+		...(rows.some(([k]) => k === "radarr") ? [{ id: "radarr", label: "Movies", scope: "Radarr · every matching movie", slots: ["radarr"], sonarr: false } as Row] : []),
+		...(!hasSonarr ? [] : splitEnded ? [
+			{ id: "cont", label: "Series - Continuing", scope: "Sonarr · still airing or not yet aired", slots: ["sonarr_continuing"], sonarr: true },
+			{ id: "ended", label: "Series - Ended", scope: "Sonarr · finished airing", slots: ["sonarr_ended"], sonarr: true },
+		] as Row[] : [{ id: "series", label: "Series", scope: "Sonarr · every matching series", slots: ["sonarr_continuing", "sonarr_ended"], sonarr: true } as Row]),
+	];
+	const summary = lines.map((l) => `${l.label}: ${verb(acts[l.slots[0]!])}`).join(" · ");
 	const title = rule ? "Edit rule" : template ? `New rule: ${template.title}` : "New rule";
 	const lede = template ? `${template.description} Adjust the numbers to taste, then preview on the dashboard.` : "Nothing changes until a run. Preview on the dashboard before trusting a new rule.";
 	const section = (t: string, extra?: React.ReactNode) => <div className="form-section">{t}<span className="grow" />{extra}</div>;
@@ -137,6 +158,7 @@ export function RuleEditor({ rule, template, types, requesters, instances }: Rul
 		<DialogFrame title={title} lede={lede} onClose={requestClose}
 			foot={<>
 				<div className="foot-row" hidden={confirmingDiscard}>
+					<span className="grow foot-note">{summary}</span>
 					<Button onClick={requestClose}>Cancel</Button>
 					<button ref={saveRef} type="button" className={`primary${saving ? " busy" : ""}`} disabled={saving} onClick={submit}>{rule ? "Save rule" : "Create rule"}</button>
 				</div>
@@ -160,16 +182,9 @@ export function RuleEditor({ rule, template, types, requesters, instances }: Rul
 			</div>
 			<fieldset className="field">
 				<legend className="lbl">Type</legend>
-				<Segmented label="Rule type" options={[["cleanup", "Cleanup"], ["retention", "Protect"]]} value={mode} onChange={setMode} />
-				<div className="help">{protect ? "Matching items are never touched by any cleanup rule." : "Matching items are flagged for the action below. The first matching cleanup rule wins."}</div>
+				<Segmented label="Rule type" options={[["cleanup", "Cleanup"], ["retention", "Protect"]]} value={mode} onChange={(m) => { setMode(m); if (m === "retention") setActs((o) => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, v && "delete"])) as RuleActions); }} />
+				<div className="help">{protect ? "Matching items are never touched by any cleanup rule." : "Matching items get the action below. The first matching cleanup rule wins."}</div>
 			</fieldset>
-			<div className="field" hidden={protect}>
-				<label className="lbl" htmlFor={`${uid}-action`}>Action</label>
-				<select id={`${uid}-action`} value={action} disabled={seasonOnly} onChange={(e) => setAction(e.target.value as CleanupAction)}>
-					{ACTIONS.filter(([v]) => !seasonOnly || v === "delete_season").map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-				</select>
-			</div>
-
 			{section("Conditions", <Button icon="code" className="small ghost" onClick={toggleJson}>{jsonMode ? "Use builder" : "Edit as JSON"}</Button>)}
 			<div hidden={jsonMode}>
 				<ConditionGroup node={root} depth={0} types={types} requesters={requesters} onChange={setRoot} />
@@ -180,13 +195,7 @@ export function RuleEditor({ rule, template, types, requesters, instances }: Rul
 				<div className="field-error" hidden={!jsonErr}>{jsonErr}</div>
 			</div>
 
-			{section("Scope")}
-			<fieldset className="field">
-				<legend className="lbl">Services</legend>
-				<Segmented label="Services" options={serviceOptions} value={service} onChange={setService} disabled={!!locked} />
-				<div className="help">Which library this rule looks at.</div>
-			</fieldset>
-			{section("Ignore")}
+			{section("Except")}
 			<Field label="Ignore tags" htmlFor={`${uid}-tags`} help="Sonarr/Radarr tag labels, comma separated.">
 				<input id={`${uid}-tags`} value={tags} placeholder="e.g. keep" onChange={(e) => setTags(e.target.value)} />
 			</Field>
@@ -195,6 +204,32 @@ export function RuleEditor({ rule, template, types, requesters, instances }: Rul
 				<input id={`${uid}-rx`} value={titleRx} placeholder="e.g. ^Star Wars" onChange={(e) => setTitleRx(e.target.value)} />
 				<div className="help">Regular expressions, comma separated.</div>
 			</div>
+			{section(protect ? "Protect" : "Action")}
+			<fieldset className="field overrides">
+				<legend className="lbl">{protect ? "Which titles this rule keeps safe, per library" : "What to do with matching titles, per library"}</legend>
+				{lines.map((l, i) => {
+					const opts: Array<[string, string]> = protect ? [["delete", "Protect"]]
+						: ACTIONS.filter(([v]) => (seasonOnly ? v === "delete_season" : v !== "delete_season" || l.sonarr)).map(([v, ac]) => [v, ac.replace(" (Sonarr)", "")]);
+					const lastSonarr = l.sonarr && i === lines.length - 1;
+					return (
+						<div key={l.id} className="override-group">
+							<label className="override">
+								<span className="who"><span className="lbl">{l.label}</span><span className="scope">{l.scope}</span></span>
+								<select value={acts[l.slots[0]!] ?? ""} onChange={(e) => { const v = (e.target.value || null) as CleanupAction | null; setActs((o) => ({ ...o, ...Object.fromEntries(l.slots.map((k) => [k, v])) })); }}>
+									<option value="">Leave alone</option>
+									{opts.map(([v, ac]) => <option key={v} value={v}>{ac}</option>)}
+								</select>
+							</label>
+							{lastSonarr && !splitEnded ? (
+								<div className="ask"><Button className="small ghost" onClick={() => setSplitEnded(true)}>{protect ? "Want to protect ended series differently?" : "Want a different action for ended series?"}</Button></div>
+							) : null}
+							{lastSonarr && splitEnded ? (
+								<div className="ask"><Button className="small ghost" onClick={() => { setActs((o) => ({ ...o, sonarr_ended: o.sonarr_continuing })); setSplitEnded(false); }}>Use the same action for all series</Button></div>
+							) : null}
+						</div>
+					);
+				})}
+			</fieldset>
 		</DialogFrame>
 	);
 }

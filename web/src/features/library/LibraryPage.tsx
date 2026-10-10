@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Art } from "../../components/media/Art";
 import { Button } from "../../components/ui/Button";
 import { BadNotice, Empty, Notices } from "../../components/ui/Feedback";
@@ -77,6 +77,16 @@ function Library({ types, requesters }: { types: RuleTypeDef[]; requesters: stri
 		return rows.filter((d) => (svc === "all" || d.service === svc) && (!q || d.title.toLowerCase().includes(q))).sort(SORTS[sort][1]);
 	}, [rows, search, svc, sort]);
 
+	const more = useRef<HTMLDivElement>(null);
+	useEffect(() => {
+		const el = more.current;
+		if (!el) return;
+		// new observer per page so a sentinel still in view keeps loading
+		const io = new IntersectionObserver((e) => { if (e[0]?.isIntersecting) setShown((n) => n + PAGE); }, { rootMargin: "400px" });
+		io.observe(el);
+		return () => io.disconnect();
+	}, [shown, visible.length]);
+
 	const open = (d: LibraryRow) => dialog.open(<LibraryDetailDialog d={d} actions={actions} onClose={dialog.close} />, { kind: "wide" });
 	const pickedRows = rows.filter((d) => selected.has(libKey(d)));
 	const toggle = (d: LibraryRow, on: boolean) => setSelected((s) => { const n = new Set(s); on ? n.add(libKey(d)) : n.delete(libKey(d)); return n; });
@@ -107,7 +117,7 @@ function Library({ types, requesters }: { types: RuleTypeDef[]; requesters: stri
 				<span className="grow" />
 				<Button icon="protected" className="small" onAction={() => actions.protectMany(pickedRows, true)}>Protect</Button>
 				<Button icon="unprotected" className="small" onAction={() => actions.protectMany(pickedRows, false)}>Unprotect</Button>
-				<Button icon="unprotected" className="small" onAction={() => actions.remove(pickedRows, "unmonitor")}>Unmonitor</Button>
+				<Button icon="unmonitor" className="small" onAction={() => actions.remove(pickedRows, "unmonitor")}>Unmonitor</Button>
 				<Button icon="trash" className="small" onAction={() => actions.remove(pickedRows, "delete_files")}>Delete files</Button>
 				<Button icon="trash" className="small danger solid" onAction={() => actions.remove(pickedRows, "delete")}>Delete</Button>
 				<Button className="small ghost" onClick={() => setSelected(new Set())}>Clear</Button>
@@ -123,7 +133,7 @@ function Library({ types, requesters }: { types: RuleTypeDef[]; requesters: stri
 							<div className="grid" role="list" aria-label="Library titles">
 								{visible.slice(0, shown).map((d) => <LibraryCard key={libKey(d)} d={d} checked={selected.has(libKey(d))} onCheck={(on) => toggle(d, on)} onOpen={() => open(d)} />)}
 							</div>
-							{shown < visible.length ? <button type="button" className="more" onClick={() => setShown(shown + PAGE)}>{`Show more (${visible.length - shown} left)`}</button> : null}
+							{shown < visible.length ? <div ref={more} className="more" aria-hidden="true" /> : null}
 						</div>
 					</div>
 				) : <Empty title="No titles match" text="Loosen the filter or search." />}

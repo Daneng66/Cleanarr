@@ -50,6 +50,12 @@ const ruleBase = z.object({
 	priority: z.number().int().default(0),
 	mode: z.enum(["cleanup", "retention"]).default("cleanup"),
 	action: z.enum(["delete", "unmonitor", "delete_files", "delete_season"]).default("delete"),
+	// What the rule does per slot; null leaves that slot alone. Replaces action + serviceFilter (still accepted for older callers).
+	actions: z.object({
+		radarr: z.enum(["delete", "unmonitor", "delete_files"]).nullable(),
+		sonarr_continuing: z.enum(["delete", "unmonitor", "delete_files", "delete_season"]).nullable(),
+		sonarr_ended: z.enum(["delete", "unmonitor", "delete_files", "delete_season"]).nullable(),
+	}).refine((a) => Object.values(a).some(Boolean), "Pick an action for at least one of movies, continuing series or ended series.").optional(),
 	expression: z.unknown().superRefine((v, ctx) => {
 		try {
 			parseExpression(v);

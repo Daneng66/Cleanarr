@@ -660,3 +660,39 @@ describe("stale unwatched episode", () => {
 		expect((await s.engine.preview()).candidates).toEqual([]);
 	});
 });
+
+describe("per-service action overrides", () => {
+	it("applies a different action to radarr, continuing and ended series", async () => {
+		const s = setup({ radarr: [movie(1)], sonarr: [series(1, { status: "continuing" }), series(2, { status: "ended" })] });
+		s.rule("old", old(100), { actions: { radarr: "unmonitor", sonarr_continuing: "delete", sonarr_ended: "delete_files" } });
+		const log = await s.engine.run({ trigger: "manual", forceDryRun: true });
+		const act = (d: any) => d.action;
+		const by = (t: string) => log!.details.filter((d: any) => d.itemType === t).map(act).sort();
+		expect(by("movie")).toEqual(["unmonitor"]);
+		expect(by("series")).toEqual(["delete", "delete_files"]); // continuing falls back to the rule's action
+	});
+});
+
+describe("per-service delete_season override", () => {
+	it("acts on seasons only for the series status that selects delete_season", async () => {
+		const s = setup({ radarr: [movie(1)], sonarr: [series(1, { status: "continuing" }), series(2, { status: "ended" })] });
+		s.rule("old", old(100), { actions: { radarr: "delete", sonarr_continuing: "delete_season", sonarr_ended: "delete" } });
+		const log = await s.engine.run({ trigger: "manual", forceDryRun: true });
+		const d = log!.details as any[];
+		expect(d.filter((x) => x.itemType === "season").every((x) => x.arrItemId === 1 && x.action === "delete_season")).toBe(true);
+		expect(d.some((x) => x.itemType === "series" && x.arrItemId === 1)).toBe(false);
+		expect(d.some((x) => x.itemType === "series" && x.arrItemId === 2 && x.action === "delete")).toBe(true);
+	});
+});
+
+describe("leave-alone slots", () => {
+	it("a null slot never matches, and legacy action + serviceFilter map onto slots", async () => {
+		const s = setup({ radarr: [movie(1)], sonarr: [series(1, { status: "continuing" }), series(2, { status: "ended" })] });
+		const r = s.rule("ended only", old(100), { actions: { radarr: null, sonarr_continuing: null, sonarr_ended: "delete" } });
+		expect(r.serviceFilter).toEqual(["sonarr"]);
+		const log = await s.engine.run({ trigger: "manual", forceDryRun: true });
+		expect((log!.details as any[]).map((d) => `${d.itemType}:${d.arrItemId}`)).toEqual(["series:2"]);
+		const legacy = s.rule("legacy", old(100), { actions: undefined, action: "unmonitor", serviceFilter: ["radarr"] });
+		expect(legacy.actions).toEqual({ radarr: "unmonitor", sonarr_continuing: null, sonarr_ended: null });
+	});
+});

@@ -12,6 +12,7 @@ export const ICONS = {
 	queued: [["rect", SQ], ["rect", { x: 3, y: 8, width: 10, height: 5, ...FILL }]],
 	protected: [["path", { d: SHIELD }]],
 	unprotected: [["path", { d: SHIELD }], ["path", { d: "M2.5 13.5l11-11" }]],
+	unmonitor: [["path", { d: "M4 2.5h8v11L8 10.6 4 13.5z" }], ["path", { d: "M2.5 13.5l11-11" }]],
 	unknown: [["rect", { ...SQ, strokeDasharray: "2.2 2" }]],
 	ejected: [["rect", SQ], ["path", { d: "M3.5 12.5l9-9" }]],
 	fault: [["path", { d: "M8 2l6.3 11.5H1.7z" }], ["path", { d: "M8 6.6v3.2M8 11.6v.1" }]],

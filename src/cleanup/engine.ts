@@ -4,6 +4,7 @@ import { normalizeItem, seasonItems } from "../arr/normalize.js";
 import { evaluateExpression, matchedReasons, parseExpression, requirements, usesType, type EvalNode, type Expression } from "../rules/expression.js";
 import { passesFilters } from "../rules/filters.js";
 import type { EvalContext } from "../rules/registry.js";
+import { slotOf } from "../rules/actions.js";
 import type { ApprovalRow, SafetySnapshot, Store } from "../store.js";
 import type { SeerrProvider, SeerrRequest } from "../seerr/seerr.js";
 import type { WatchProvider } from "../watch/plex.js";
@@ -275,7 +276,7 @@ export function createEngine(deps: EngineDeps) {
 				needs.files ||= req.files;
 				needs.watch ||= req.watch;
 				needs.seerr ||= req.seerr;
-				needs.seasons ||= rule.mode === "cleanup" && rule.action === "delete_season";
+				needs.seasons ||= rule.mode === "cleanup" && Object.values(rule.actions).includes("delete_season");
 				rules.push({ rule, expr });
 			} catch (e) {
 				warnings.push(`Rule "${rule.name}" skipped: invalid expression (${(e as Error).message})`);
@@ -290,6 +291,9 @@ export function createEngine(deps: EngineDeps) {
 	const covers = (keys: Set<string>, i: LibraryItem) => keys.has(targetKey(i)) || (i.kind === "season" && keys.has(`${i.instanceId}:series:${i.arrId}`));
 	const seasonOf = (i: LibraryItem) => (i.season ? { seasonNumber: i.season.number } : i.onlySeason != null ? { onlySeason: i.onlySeason } : {});
 
+	/** What the rule does to this item; null = the rule leaves its slot alone. */
+	const actionFor = (rule: RuleRecord, item: LibraryItem): CleanupAction | null => rule.actions?.[slotOf(item)] ?? (rule.actions ? null : rule.action);
+
 	const detail = (c: Candidate, outcome: Outcome, message?: string): RunDetail => ({
 		instanceId: c.item.instanceId,
 		arrItemId: c.item.arrId,
@@ -298,7 +302,7 @@ export function createEngine(deps: EngineDeps) {
 		title: c.item.title,
 		ruleId: c.rule.id,
 		ruleName: c.rule.name,
-		action: c.rule.action,
+		action: actionFor(c.rule, c.item) ?? c.rule.action,
 		reason: c.reason,
 		reasons: c.reasons,
 		sizeOnDisk: c.item.sizeOnDisk,
@@ -322,7 +326,7 @@ export function createEngine(deps: EngineDeps) {
 			let protectedBy: string | null = covers(protectedKeys, item) ? "Manually protected" : null;
 			if (!protectedBy && !covers(overrideKeys, item)) {
 				for (const { rule, expr } of retention) {
-					if (!passesFilters(item, rule).ok) continue;
+					if (actionFor(rule, item) === null || !passesFilters(item, rule).ok) continue;
 					const r = evaluateExpression(expr, item, snap.ctx);
 					if (r.state !== "false") {
 						protectedBy = r.state === "true" ? `Protected by retention rule "${rule.name}": ${r.reason}` : `Retention rule "${rule.name}" could not be evaluated (${r.reason})`;
@@ -336,7 +340,8 @@ export function createEngine(deps: EngineDeps) {
 			}
 			for (const { rule, expr } of cleanup) {
 				// Season items are only for "delete season" rules, and those rules only see season items.
-				if ((item.kind === "season") !== (rule.action === "delete_season")) continue;
+				const act = actionFor(rule, item);
+				if (act === null || (item.kind === "season") !== (act === "delete_season")) continue;
 				if (!passesFilters(item, rule).ok) continue;
 				if (!item.hasFile && !usesType(expr, "no_file")) continue; // nothing on disk to reclaim, e.g. a continuing series with no episodes yet
 				const r = evaluateExpression(expr, item, snap.ctx);
@@ -597,7 +602,7 @@ export function createEngine(deps: EngineDeps) {
 				if (!immediate) budget--; // immediate execution below decrements budget itself, via executeQueued
 				const approval = store.approvals.create({
 					instanceId: c.item.instanceId, arrItemId: c.item.arrId, seasonNumber: c.item.season?.number ?? null, itemType: c.item.kind, title: c.item.title, year: c.item.year,
-					sizeOnDisk: c.item.sizeOnDisk, ruleId: c.rule.id, ruleName: c.rule.name, reason: c.reason, action: c.rule.action,
+					sizeOnDisk: c.item.sizeOnDisk, ruleId: c.rule.id, ruleName: c.rule.name, reason: c.reason, action: actionFor(c.rule, c.item) ?? c.rule.action,
 					safetySnapshot: snapshotOf(c.item), executeAfter: new Date(now().getTime() + (immediate ? 0 : config.queueDelayDays * 86_400_000)),
 				});
 				approvalAudit(approval, { correlationId: approval.id, eventType: "proposed", outcome: "info", trigger: opts.trigger, actor, runLogId, reason: c.reason });
@@ -650,10 +655,12 @@ export function createEngine(deps: EngineDeps) {
 			item: { title: item.title, year: item.year, kind: item.kind, seasonNumber: item.season?.number ?? null, sizeOnDisk: item.sizeOnDisk, monitored: item.monitored, status: item.status, certification: item.certification, tags: item.tags, path: item.path },
 			warnings,
 			rules: rules.map(({ rule, expr }) => {
-				const seasonScope = rule.mode === "cleanup" && (item.kind === "season") !== (rule.action === "delete_season");
-				const f: ReturnType<typeof passesFilters> = seasonScope ? { ok: false, why: item.kind === "season" ? "not a season rule" : "season rules only act on seasons" } : passesFilters(item, rule);
+				const act = actionFor(rule, item);
+				const seasonScope = rule.mode === "cleanup" && act !== null && (item.kind === "season") !== (act === "delete_season");
+				const slotName = { radarr: "movies", sonarr_continuing: "continuing series", sonarr_ended: "ended series" }[slotOf(item)];
+				const f: ReturnType<typeof passesFilters> = act === null ? { ok: false, why: `rule leaves ${slotName} alone` } : seasonScope ? { ok: false, why: item.kind === "season" ? "not a season rule" : "season rules only act on seasons" } : passesFilters(item, rule);
 				const ev: EvalNode | null = f.ok ? evaluateExpression(expr, item, ctx) : null;
-				return { ruleId: rule.id, name: rule.name, mode: rule.mode, action: rule.action, inScope: f.ok, excludedBy: f.ok ? null : f.why, state: ev?.state ?? null, tree: ev };
+				return { ruleId: rule.id, name: rule.name, mode: rule.mode, action: act ?? rule.action, inScope: f.ok, excludedBy: f.ok ? null : f.why, state: ev?.state ?? null, tree: ev };
 			}),
 		};
 	}
@@ -675,7 +682,7 @@ export function createEngine(deps: EngineDeps) {
 			if (budget-- <= 0) break;
 			const approval = store.approvals.create({
 				instanceId: c.item.instanceId, arrItemId: c.item.arrId, seasonNumber: c.item.season?.number ?? null, itemType: c.item.kind, title: c.item.title, year: c.item.year,
-				sizeOnDisk: c.item.sizeOnDisk, ruleId: c.rule.id, ruleName: c.rule.name, reason: c.reason, action: c.rule.action,
+				sizeOnDisk: c.item.sizeOnDisk, ruleId: c.rule.id, ruleName: c.rule.name, reason: c.reason, action: actionFor(c.rule, c.item) ?? c.rule.action,
 				safetySnapshot: snapshotOf(c.item), executeAfter: new Date(now().getTime() + config.queueDelayDays * 86_400_000),
 			});
 			approvalAudit(approval, { correlationId: approval.id, eventType: "proposed", outcome: "info", trigger: "pickup", actor: "system", reason: c.reason });

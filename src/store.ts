@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import type { Db } from "./db.js";
 import { firstRun, nextRun } from "./schedule.js";
 import type { Encryptor } from "./crypto.js";
-import type { CleanupAction, ConfigRecord, Instance, InstanceType, ItemKind, RuleMode, RuleRecord, Service, Trigger } from "./types.js";
+import { firstAction, servicesOf, toActions } from "./rules/actions.js";
+import type { CleanupAction, RuleActions, ConfigRecord, Instance, InstanceType, ItemKind, RuleMode, RuleRecord, Service, Trigger } from "./types.js";
 
 const json = (v: unknown) => (v === null || v === undefined ? null : JSON.stringify(v));
 const parse = <T>(v: unknown): T | null => (typeof v === "string" ? (JSON.parse(v) as T) : null);
@@ -182,16 +183,21 @@ export function createStore(db: Db, enc: Encryptor, now: () => Date = () => new 
 		enabled: !!r.enabled,
 		priority: r.priority,
 		mode: r.mode as RuleMode,
-		action: r.action as CleanupAction,
+		...rowActions(r),
 		expression: JSON.parse(r.expression),
-		serviceFilter: parse<Service[]>(r.service_filter),
 		instanceFilter: parse<string[]>(r.instance_filter),
 		excludeTags: parse<string[]>(r.exclude_tags),
 		excludeTitles: parse<string[]>(r.exclude_titles),
 		serviceLocked: !!r.service_locked,
 	});
 
-	type RuleInput = Omit<RuleRecord, "id">;
+	/** `actions` is the truth; rows from before it existed derive it from action + service filter + overrides. */
+	function rowActions(r: any) {
+		const actions = parse<RuleActions>(r.actions) ?? toActions(r.action as CleanupAction, parse<Service[]>(r.service_filter), parse(r.action_overrides));
+		return { actions, action: firstAction(actions) ?? (r.action as CleanupAction), serviceFilter: servicesOf(actions) };
+	}
+	type RuleInput = Omit<RuleRecord, "id" | "actions" | "action" | "serviceFilter"> & { actions?: RuleActions; action?: CleanupAction; serviceFilter?: Service[] | null };
+	const ruleCols = (a: RuleActions) => [firstAction(a) ?? "delete", JSON.stringify(a), json(servicesOf(a))] as const;
 	const rules = {
 		list: (): RuleRecord[] => db.prepare("SELECT * FROM rules ORDER BY priority, created_at").all().map(ruleRow),
 		get(id: string): RuleRecord | undefined {
@@ -201,11 +207,12 @@ export function createStore(db: Db, enc: Encryptor, now: () => Date = () => new 
 		create(r: RuleInput): RuleRecord {
 			const id = randomUUID();
 			const ts = iso(now());
+			const [action, actions, services] = ruleCols(r.actions ?? toActions(r.action ?? "delete", r.serviceFilter ?? null));
 			db.prepare(
-				`INSERT INTO rules (id,name,enabled,priority,mode,action,expression,service_filter,instance_filter,exclude_tags,exclude_titles,
-				 service_locked,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+				`INSERT INTO rules (id,name,enabled,priority,mode,action,actions,expression,service_filter,instance_filter,exclude_tags,exclude_titles,
+				 service_locked,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			).run(
-				id, r.name, r.enabled ? 1 : 0, r.priority, r.mode, r.action, JSON.stringify(r.expression), json(r.serviceFilter), json(r.instanceFilter),
+				id, r.name, r.enabled ? 1 : 0, r.priority, r.mode, action, actions, JSON.stringify(r.expression), services, json(r.instanceFilter),
 				json(r.excludeTags), json(r.excludeTitles), r.serviceLocked ? 1 : 0, ts, ts,
 			);
 			return rules.get(id) as RuleRecord;
@@ -213,12 +220,14 @@ export function createStore(db: Db, enc: Encryptor, now: () => Date = () => new 
 		update(id: string, patch: Partial<RuleInput>): RuleRecord | undefined {
 			const cur = rules.get(id);
 			if (!cur) return undefined;
-			const r = { ...cur, ...patch };
+			const legacy = patch.action !== undefined || patch.serviceFilter !== undefined;
+			const r = { ...cur, ...patch, actions: patch.actions ?? (legacy ? toActions(patch.action ?? cur.action, patch.serviceFilter === undefined ? cur.serviceFilter : patch.serviceFilter) : cur.actions) };
+			const [action, actions, services] = ruleCols(r.actions);
 			db.prepare(
-				`UPDATE rules SET name=?,enabled=?,priority=?,mode=?,action=?,expression=?,service_filter=?,instance_filter=?,exclude_tags=?,
+				`UPDATE rules SET name=?,enabled=?,priority=?,mode=?,action=?,actions=?,expression=?,service_filter=?,instance_filter=?,exclude_tags=?,
 				 exclude_titles=?,service_locked=?,updated_at=? WHERE id=?`,
 			).run(
-				r.name, r.enabled ? 1 : 0, r.priority, r.mode, r.action, JSON.stringify(r.expression), json(r.serviceFilter), json(r.instanceFilter),
+				r.name, r.enabled ? 1 : 0, r.priority, r.mode, action, actions, JSON.stringify(r.expression), services, json(r.instanceFilter),
 				json(r.excludeTags), json(r.excludeTitles), r.serviceLocked ? 1 : 0, iso(now()), id,
 			);
 			return rules.get(id);
