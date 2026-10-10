@@ -1,10 +1,10 @@
-@font-face { font-family: "Barlow"; font-weight: 400; font-display: swap; src: url(fonts/barlow-400.woff2) format("woff2"); }
-@font-face { font-family: "Barlow"; font-weight: 500; font-display: swap; src: url(fonts/barlow-500.woff2) format("woff2"); }
-@font-face { font-family: "Barlow"; font-weight: 600; font-display: swap; src: url(fonts/barlow-600.woff2) format("woff2"); }
-@font-face { font-family: "Barlow"; font-weight: 700; font-display: swap; src: url(fonts/barlow-700.woff2) format("woff2"); }
-@font-face { font-family: "Barlow Semi Condensed"; font-weight: 500; font-display: swap; src: url(fonts/barlow-sc-500.woff2) format("woff2"); }
-@font-face { font-family: "Barlow Semi Condensed"; font-weight: 600; font-display: swap; src: url(fonts/barlow-sc-600.woff2) format("woff2"); }
-@font-face { font-family: "Barlow Semi Condensed"; font-weight: 700; font-display: swap; src: url(fonts/barlow-sc-700.woff2) format("woff2"); }
+@font-face { font-family: "Barlow"; font-weight: 400; font-display: swap; src: url(/fonts/barlow-400.woff2) format("woff2"); }
+@font-face { font-family: "Barlow"; font-weight: 500; font-display: swap; src: url(/fonts/barlow-500.woff2) format("woff2"); }
+@font-face { font-family: "Barlow"; font-weight: 600; font-display: swap; src: url(/fonts/barlow-600.woff2) format("woff2"); }
+@font-face { font-family: "Barlow"; font-weight: 700; font-display: swap; src: url(/fonts/barlow-700.woff2) format("woff2"); }
+@font-face { font-family: "Barlow Semi Condensed"; font-weight: 500; font-display: swap; src: url(/fonts/barlow-sc-500.woff2) format("woff2"); }
+@font-face { font-family: "Barlow Semi Condensed"; font-weight: 600; font-display: swap; src: url(/fonts/barlow-sc-600.woff2) format("woff2"); }
+@font-face { font-family: "Barlow Semi Condensed"; font-weight: 700; font-display: swap; src: url(/fonts/barlow-sc-700.woff2) format("woff2"); }
 
 /* Tape Library: rack steel, barcode label stock, cartridge shells, I/E amber. */
 :root {
@@ -187,7 +187,8 @@ input[type=checkbox] { accent-color: var(--ink); width: 18px; height: 18px; min-
 .posters .scale { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 4px 12px; color: var(--ink-2); font: 500 12px/1 var(--mono); margin-bottom: 12px; }
 .posters .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); gap: 18px 14px; }
 .posters .grid > * { min-width: 0; }
-.poster { display: flex; flex-direction: column; align-items: stretch; gap: 8px; width: 100%; padding: 0; border: 0; background: none; color: inherit; text-align: left; cursor: pointer; }
+.poster { display: flex; flex-direction: column; align-items: stretch; gap: 8px; width: calc(100% + 16px); margin: -8px; padding: 8px; border: 0; border-radius: var(--radius); background: none; color: inherit; text-align: left; cursor: pointer; transition: background-color .12s var(--step); }
+.poster:hover { background: var(--rack); box-shadow: inset 0 0 0 1px var(--line); }
 .poster .art { position: relative; display: block; aspect-ratio: 2 / 3; border-radius: var(--radius); overflow: hidden; background: var(--well); box-shadow: var(--shadow); transition: transform .12s var(--step); }
 .poster .art img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .deleting { pointer-events: none; }
@@ -203,7 +204,7 @@ input[type=checkbox] { accent-color: var(--ink); width: 18px; height: 18px; min-
 .poster:focus-visible .art { outline: 2px solid var(--focus); outline-offset: 2px; }
 .poster .cap { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .poster .cap .t { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.poster .cap .m { color: var(--ink-3); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.poster .cap .m { color: var(--ink-3); font-size: 12px; line-height: 1.3; min-height: 2.6em; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; white-space: normal; }
 .posters .more { display: block; margin: 20px auto 0; }
 .posters.state .ph { aspect-ratio: 2 / 3; border-radius: var(--radius); background: var(--well); }
 .posters.state .grid { max-height: 230px; overflow: hidden; mask-image: linear-gradient(#000 40%, transparent); }

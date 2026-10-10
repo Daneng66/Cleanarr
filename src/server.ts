@@ -1,4 +1,5 @@
 import { timingSafeEqual } from "node:crypto";
+import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import fastifyStatic from "@fastify/static";
@@ -156,7 +157,10 @@ export function buildApp(deps: AppDeps): FastifyInstance {
 	}, { prefix: "/api" });
 
 	// ── Web UI ─────────────────────────────────────────────────────────────
-	app.register(fastifyStatic, { root: join(dirname(fileURLToPath(import.meta.url)), "web"), wildcard: false });
+	// Built bundle: dist/web next to this file; under `tsx` (src/) fall back to the last `vite build`.
+	const here = dirname(fileURLToPath(import.meta.url));
+	const webRoot = [join(here, "web"), join(here, "..", "dist", "web")].find(existsSync) ?? join(here, "web");
+	app.register(fastifyStatic, { root: webRoot, wildcard: false });
 	app.setNotFoundHandler((req, reply) => (req.url.startsWith("/api/") ? reply.code(404).send({ error: "Not found" }) : reply.code(404).send("Not found")));
 
 	return app;

@@ -4,7 +4,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 make g+
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY tsconfig.json tsconfig.build.json ./
-COPY scripts ./scripts
+COPY web ./web
 COPY src ./src
 RUN npm run build && npm prune --omit=dev
 
