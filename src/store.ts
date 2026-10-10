@@ -188,6 +188,7 @@ export function createStore(db: Db, enc: Encryptor, now: () => Date = () => new 
 		instanceFilter: parse<string[]>(r.instance_filter),
 		excludeTags: parse<string[]>(r.exclude_tags),
 		excludeTitles: parse<string[]>(r.exclude_titles),
+		serviceLocked: !!r.service_locked,
 	});
 
 	type RuleInput = Omit<RuleRecord, "id">;
@@ -202,10 +203,10 @@ export function createStore(db: Db, enc: Encryptor, now: () => Date = () => new 
 			const ts = iso(now());
 			db.prepare(
 				`INSERT INTO rules (id,name,enabled,priority,mode,action,expression,service_filter,instance_filter,exclude_tags,exclude_titles,
-				 created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+				 service_locked,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			).run(
 				id, r.name, r.enabled ? 1 : 0, r.priority, r.mode, r.action, JSON.stringify(r.expression), json(r.serviceFilter), json(r.instanceFilter),
-				json(r.excludeTags), json(r.excludeTitles), ts, ts,
+				json(r.excludeTags), json(r.excludeTitles), r.serviceLocked ? 1 : 0, ts, ts,
 			);
 			return rules.get(id) as RuleRecord;
 		},
@@ -215,10 +216,10 @@ export function createStore(db: Db, enc: Encryptor, now: () => Date = () => new 
 			const r = { ...cur, ...patch };
 			db.prepare(
 				`UPDATE rules SET name=?,enabled=?,priority=?,mode=?,action=?,expression=?,service_filter=?,instance_filter=?,exclude_tags=?,
-				 exclude_titles=?,updated_at=? WHERE id=?`,
+				 exclude_titles=?,service_locked=?,updated_at=? WHERE id=?`,
 			).run(
 				r.name, r.enabled ? 1 : 0, r.priority, r.mode, r.action, JSON.stringify(r.expression), json(r.serviceFilter), json(r.instanceFilter),
-				json(r.excludeTags), json(r.excludeTitles), iso(now()), id,
+				json(r.excludeTags), json(r.excludeTitles), r.serviceLocked ? 1 : 0, iso(now()), id,
 			);
 			return rules.get(id);
 		},

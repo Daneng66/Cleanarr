@@ -61,6 +61,7 @@ const ruleBase = z.object({
 	instanceFilter: z.array(z.string()).nullable().default(null),
 	excludeTags: z.array(z.string().min(1)).nullable().default(null),
 	excludeTitles: patterns.nullable().default(null),
+	serviceLocked: z.boolean().default(false),
 });
 export const ruleCreate = ruleBase;
 export const ruleUpdate = ruleBase.partial();

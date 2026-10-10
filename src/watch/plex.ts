@@ -2,8 +2,10 @@ import type { FetchFn } from "../arr/client.js";
 import type { Instance, LibraryItem, WatchInfo } from "../types.js";
 
 export interface WatchProvider {
+	/** Web-app URL of the title in Plex, or null when Plex doesn't have it. Best effort: throws on connection problems. */
+	link?(q: { kind: "movie" | "show"; title: string; tmdbId: number | null; tvdbId: number | null }): Promise<string | null>;
 	/** Resolves lookup for the given items; throws when the history can't be read completely. */
-	load(): Promise<{ lookup: (item: LibraryItem) => WatchInfo | undefined; certLookup?: (item: LibraryItem) => string | undefined; warnings: string[] }>;
+	load(): Promise<{ lookup: (item: LibraryItem) => WatchInfo | undefined; certLookup?: (item: LibraryItem) => string | undefined; addedLookup?: (item: LibraryItem) => Date | undefined; warnings: string[] }>;
 }
 
 const PAGE = 500;
@@ -27,6 +29,8 @@ interface PlexMeta {
 	contentRating?: string;
 	/** Plex's unified numeric age rating (e.g. 14); some items have only this, no label. */
 	contentRatingAge?: number;
+	/** Library listing rows only: Unix seconds when Plex first scanned the title in. */
+	addedAt?: number;
 }
 
 /**
@@ -66,6 +70,21 @@ export function createPlexProvider(instance: Pick<Instance, "url" | "apiKey">, f
 	}
 
 	return {
+		async link({ kind, title, tmdbId, tvdbId }) {
+			const want = [tmdbId !== null ? `tmdb://${tmdbId}` : "", tvdbId !== null ? `tvdb://${tvdbId}` : ""].filter(Boolean);
+			if (!want.length) return null;
+			const { items: sections } = await get<{ key: string; type: string }>("/library/sections");
+			for (const sec of sections.filter((x) => x.type === kind)) {
+				const { items } = await get<PlexMeta>(`/library/sections/${encodeURIComponent(sec.key)}/all?includeGuids=1&title=${encodeURIComponent(title)}`);
+				const hit = items.find((m) => m.ratingKey !== undefined && m.Guid?.some((g) => want.includes(g.id ?? "")));
+				if (!hit) continue;
+				const res = await fetchFn(`${base}/`, { headers: { Accept: "application/json", "X-Plex-Token": instance.apiKey }, signal: AbortSignal.timeout(15_000) });
+				const id = ((await res.json()) as { MediaContainer?: { machineIdentifier?: string } }).MediaContainer?.machineIdentifier;
+				if (!res.ok || !id) return null;
+				return `${base}/web/index.html#!/server/${id}/details?key=${encodeURIComponent(`/library/metadata/${hit.ratingKey}`)}`;
+			}
+			return null;
+		},
 		async load() {
 			const warnings: string[] = [];
 			const [{ items: sections }, { items: accounts }] = await Promise.all([
@@ -78,6 +97,8 @@ export function createPlexProvider(instance: Pick<Instance, "url" | "apiKey">, f
 			const guidsByKey = new Map<string, string[]>();
 			// "tmdb:123" / "tvdb:456" -> Plex's content rating for that title.
 			const certByExternalId = new Map<string, string>();
+			// "tmdb:123" / "tvdb:456" -> when Plex first added that title (earliest wins if listed twice).
+			const addedByExternalId = new Map<string, Date>();
 			for (const s of sections.filter((x) => x.type === "movie" || x.type === "show")) {
 				const metas = await paged<PlexMeta>(`/library/sections/${encodeURIComponent(s.key)}/all?includeGuids=1`, MAX_LIBRARY_ITEMS, `library "${s.title}"`);
 				for (const m of metas) {
@@ -87,10 +108,15 @@ export function createPlexProvider(instance: Pick<Instance, "url" | "apiKey">, f
 					// Prefer the labeled rating (e.g. "TV-14"); some items only have Plex's numeric unified age rating.
 					// Plex's API prefixes the label with a country code (e.g. "gb/U"); its own UI shows just "U".
 					const rating = (m.contentRating || (typeof m.contentRatingAge === "number" ? String(m.contentRatingAge) : undefined))?.replace(/^[a-z]{2}\//i, "");
-					if (rating) {
-						for (const g of guids) {
-							const mm = /^(tmdb|tvdb):\/\/(\d+)$/.exec(g);
-							if (mm) certByExternalId.set(`${mm[1]}:${mm[2]}`, rating);
+					for (const g of guids) {
+						const mm = /^(tmdb|tvdb):\/\/(\d+)$/.exec(g);
+						if (!mm) continue;
+						const k = `${mm[1]}:${mm[2]}`;
+						if (rating) certByExternalId.set(k, rating);
+						if (typeof m.addedAt === "number" && m.addedAt > 0) {
+							const d = new Date(m.addedAt * 1000);
+							const prev = addedByExternalId.get(k);
+							if (!prev || d < prev) addedByExternalId.set(k, d);
 						}
 					}
 				}
@@ -156,6 +182,9 @@ export function createPlexProvider(instance: Pick<Instance, "url" | "apiKey">, f
 				},
 				certLookup(item: LibraryItem) {
 					return (item.tvdbId !== null ? certByExternalId.get(`tvdb:${item.tvdbId}`) : undefined) ?? (item.tmdbId !== null ? certByExternalId.get(`tmdb:${item.tmdbId}`) : undefined);
+				},
+				addedLookup(item: LibraryItem) {
+					return (item.tvdbId !== null ? addedByExternalId.get(`tvdb:${item.tvdbId}`) : undefined) ?? (item.tmdbId !== null ? addedByExternalId.get(`tmdb:${item.tmdbId}`) : undefined);
 				},
 			};
 		},

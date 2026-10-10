@@ -1,5 +1,5 @@
 import { RULE_TYPES, type Eval, type EvalContext, type Tri } from "./registry.js";
-import type { LibraryItem } from "../types.js";
+import type { LibraryItem, MatchedReason } from "../types.js";
 
 export const MAX_DEPTH = 8;
 export const MAX_NODES = 100;
@@ -66,6 +66,10 @@ export function parseExpression(raw: unknown): Expression {
 	return tree;
 }
 
+export function usesType(e: Expression, type: string): boolean {
+	return "type" in e ? e.type === type : (Array.isArray(e.of) ? e.of : [e.of]).some((c) => usesType(c, type));
+}
+
 export function requirements(expr: Expression): { files: boolean; watch: boolean; seerr: boolean } {
 	const out = { files: false, watch: false, seerr: false };
 	const visit = (e: Expression) => {
@@ -87,6 +91,14 @@ export interface EvalNode extends Eval {
 	/** Leaves carry the rule type; groups carry their operator (for explain output). */
 	type?: string;
 	op?: "and" | "or" | "not";
+}
+
+/** Flattens an evaluation into the sub-conditions that made it true (OR keeps only the true branches; NOT is one entry). */
+export function matchedReasons(n: EvalNode): MatchedReason[] {
+	if (n.state !== "true") return [];
+	if (n.type) return [{ type: n.type, text: n.reason }];
+	if (n.op === "not") return [{ type: "not", text: n.reason }];
+	return (n.children ?? []).flatMap(matchedReasons);
 }
 
 /**

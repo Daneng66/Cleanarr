@@ -94,6 +94,7 @@ h3 { font-size: 16px; font-weight: 600; line-height: 1.25; }
 .panel-body { padding: 16px; }
 section + section { margin-top: 32px; }
 .section-title { display: flex; align-items: baseline; gap: 12px; margin: 0 0 12px; flex-wrap: wrap; }
+.panel + .section-title { margin-top: 32px; }
 
 /* ── Controls ─────────────────────────────────────────────────────────── */
 button, .btn { display: inline-flex; align-items: center; justify-content: center; gap: 7px; font: 600 14px/1 var(--sans); padding: 0 14px; min-height: 36px; border-radius: var(--radius); border: 1px solid var(--line-2); background: var(--rack); color: var(--ink); cursor: pointer; text-decoration: none; white-space: nowrap; transition: background-color .15s, border-color .15s, color .15s; }
@@ -297,6 +298,7 @@ td .sub { color: var(--ink-3); font-size: 13px; margin-top: 2px; }
 /* Rules */
 .rules { list-style: none; margin: 0; padding: 0; }
 .rules li { display: grid; grid-template-columns: 30px auto minmax(0, 1fr) auto; gap: 14px; align-items: center; padding: 15px 16px; border-top: 1px solid var(--line); }
+.rules.unordered li { grid-template-columns: auto minmax(0, 1fr) auto; }
 .rules li:first-child { border-top: 0; }
 .rules li.off .body { opacity: .55; }
 .rules .slotno { font: 600 14px/1 var(--mono); color: var(--ink-3); text-align: right; }
@@ -305,7 +307,8 @@ td .sub { color: var(--ink-3); font-size: 13px; margin-top: 2px; }
 .rules .body .expr { color: var(--ink-2); font-size: 14px; margin-top: 5px; }
 .rules .body .expr b { color: var(--ink); font-weight: 600; }
 .op { font: 700 11px/1 var(--cond); letter-spacing: .08em; color: var(--ink-3); padding: 0 3px; }
-.rules .acts { display: flex; gap: 4px; }
+.rules .acts { display: flex; gap: 4px; align-items: center; }
+.rules.templates .acts { gap: 12px; }
 .rules.templates li { grid-template-columns: minmax(0, 1fr) auto; }
 .rules .desc { margin: 4px 0 0; color: var(--ink); font-size: 15px; max-width: 70ch; }
 .rules.templates .expr { font-size: 13px; color: var(--ink-3); }
@@ -334,6 +337,8 @@ td .sub { color: var(--ink-3); font-size: 13px; margin-top: 2px; }
 .tree .st svg.i { margin-top: 3px; }
 .verdict { padding: 13px 14px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--rack-2); }
 .verdict + .verdict { margin-top: 10px; }
+.out-of-scope { margin-top: 10px; }
+.out-of-scope > summary { cursor: pointer; margin-bottom: 10px; }
 .verdict .row strong { font: 600 17px/1.2 var(--cond); margin-right: 4px; }
 .x .explain { padding: 4px 0; }
 tr.xrow td { background: var(--rack-2); }
@@ -445,7 +450,9 @@ input[aria-invalid=true] { border-color: var(--red); }
 	.drivers li { grid-template-columns: minmax(0, 1fr) auto; }
 	.drivers .bar { grid-column: 1 / -1; grid-row: 2; }
 	.rules li { grid-template-columns: 22px auto minmax(0, 1fr); gap: 12px; }
+	.rules.unordered li { grid-template-columns: auto minmax(0, 1fr); }
 	.rules .acts { grid-column: 3; }
+	.rules.unordered .acts { grid-column: 2; }
 	.rules.templates li { grid-template-columns: minmax(0, 1fr); }
 	.rules.templates .acts { grid-column: 1; }
 	.rules.templates .acts button { width: auto; flex: 1; }
@@ -538,3 +545,16 @@ input[aria-invalid=true] { border-color: var(--red); }
 .skip-card .head .sz { padding-top: 0; }
 .skip-card .foot { flex-wrap: wrap; }
 .skip-card .t { white-space: normal; overflow-wrap: anywhere; text-overflow: clip; }
+
+/* Nested condition groups: a sub-group is an outlined region, not another filled card; siblings are joined by their group's AND / OR. */
+.grp.sub { margin: 0; padding: 12px; border: 1px solid var(--line-2); border-radius: var(--radius); background: transparent; }
+.grp-head { min-height: 38px; }
+.grp.sub > .grp-head { margin-bottom: 12px; }
+.grp-kids > * { position: relative; margin-bottom: 0; }
+.grp-kids > :not(:last-child) { margin-bottom: 26px; }
+.grp-kids > :not(:last-child)::after { content: "AND"; position: absolute; left: 14px; top: calc(100% + 5px); font: 600 12px/16px var(--cond); letter-spacing: .08em; color: var(--ink-3); pointer-events: none; }
+.grp[data-op=or] > .grp-kids > :not(:last-child)::after { content: "OR"; color: var(--ink); }
+.grp-add { display: flex; flex-wrap: wrap; gap: 4px 8px; margin-top: 14px; }
+.grp.sub > .grp-add { margin-bottom: 0; }
+.seg.wrap { flex-wrap: wrap; }
+.tree.flat { margin: 0; }

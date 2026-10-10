@@ -122,6 +122,19 @@ describe("Plex provider", () => {
 		expect(certLookup?.(mItem(1))).toBe("16"); // no label, falls back to the numeric age
 		expect(certLookup?.(sItem(1))).toBe("TV-14"); // label present, takes priority over the age
 	});
+	it("exposes Plex's addedAt as the title's age, keyed by tmdb/tvdb id", async () => {
+		const { fn } = fakePlex();
+		const items = { "1": [{ ratingKey: "100", Guid: [{ id: "tmdb://1001" }], addedAt: 1_600_000_000 }], "2": [{ ratingKey: "200", Guid: [{ id: "tvdb://2001" }] }] };
+		const withAdded = (async (input: any, init?: any) => {
+			const m = /^\/library\/sections\/(\d+)\/all$/.exec(new URL(String(input)).pathname);
+			if (m) return json({ MediaContainer: { totalSize: (items as any)[m[1]!]?.length ?? 0, Metadata: (items as any)[m[1]!] ?? [] } });
+			return fn(input, init);
+		}) as typeof fetch;
+		const { addedLookup } = await createPlexProvider({ url: "http://plex", apiKey: "tok" }, withAdded).load();
+		expect(addedLookup?.(mItem(1))?.toISOString()).toBe("2020-09-13T12:26:40.000Z");
+		expect(addedLookup?.(sItem(1))).toBeUndefined(); // no addedAt on that show
+		expect(addedLookup?.(mItem(2))).toBeUndefined();
+	});
 	it("connection test", async () => {
 		await expect(testPlex({ url: "http://plex", apiKey: "tok" }, fakePlex().fn)).resolves.toBeUndefined();
 		await expect(testPlex({ url: "http://plex", apiKey: "bad" }, fakePlex().fn)).rejects.toThrow(/rejected the token/);
@@ -198,7 +211,7 @@ describe("migrate", () => {
 		const db = new Database(":memory:");
 		migrate(db);
 		migrate(db);
-		expect(db.pragma("user_version", { simple: true })).toBe(11);
+		expect(db.pragma("user_version", { simple: true })).toBe(12);
 		expect(db.prepare("SELECT id FROM config").all()).toEqual([{ id: 1 }]);
 		expect(() => db.prepare("INSERT INTO instances (id,name,type,url,api_key_enc,created_at) VALUES ('t','T','tautulli','http://t','x','now')").run()).toThrow(/CHECK/);
 	});

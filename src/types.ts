@@ -55,6 +55,10 @@ export interface LibraryItem {
 	qualityProfileName: string | null;
 	sizeOnDisk: number;
 	added: Date | null;
+	/** Series whose files all sit in one season: that season's number. Lets cards show the season badge. */
+	onlySeason?: number;
+	/** Series only: how many real seasons (not specials) are monitored. */
+	monitoredSeasons?: number;
 	genres: string[];
 	/** Age rating as Radarr/Sonarr report it (e.g. PG-13, TV-Y7); null when the item has none. */
 	certification: string | null;
@@ -89,10 +93,17 @@ export interface WatchData {
 	byKey: Map<string, WatchInfo>;
 }
 
+/** One satisfied sub-condition of a matched rule: the rule type and its fact-phrased text. */
+export interface MatchedReason {
+	type: string;
+	text: string;
+}
+
 export interface Candidate {
 	item: LibraryItem;
 	rule: RuleRecord;
 	reason: string;
+	reasons?: MatchedReason[];
 }
 
 export interface RuleRecord {
@@ -107,6 +118,8 @@ export interface RuleRecord {
 	instanceFilter: string[] | null;
 	excludeTags: string[] | null;
 	excludeTitles: string[] | null;
+	/** Created from a single-platform template: the service filter can't be changed. */
+	serviceLocked: boolean;
 }
 
 export interface ConfigRecord {

@@ -1,14 +1,14 @@
 import { randomUUID } from "node:crypto";
 import type { ArrApi } from "../arr/client.js";
 import { normalizeItem, seasonItems } from "../arr/normalize.js";
-import { evaluateExpression, parseExpression, requirements, type EvalNode, type Expression } from "../rules/expression.js";
+import { evaluateExpression, matchedReasons, parseExpression, requirements, usesType, type EvalNode, type Expression } from "../rules/expression.js";
 import { passesFilters } from "../rules/filters.js";
 import type { EvalContext } from "../rules/registry.js";
 import type { ApprovalRow, SafetySnapshot, Store } from "../store.js";
 import type { SeerrProvider, SeerrRequest } from "../seerr/seerr.js";
 import type { WatchProvider } from "../watch/plex.js";
 import { mergeEpisodes } from "../watch/plex.js";
-import type { CleanupAction, Candidate, ConfigRecord, Instance, LibraryItem, RuleRecord, Trigger, WatchInfo } from "../types.js";
+import type { CleanupAction, Candidate, MatchedReason, ConfigRecord, Instance, LibraryItem, RuleRecord, Trigger, WatchInfo } from "../types.js";
 
 export interface Logger {
 	info(obj: unknown, msg?: string): void;
@@ -43,11 +43,15 @@ export interface RunDetail {
 	itemType: string;
 	/** Season items only. */
 	seasonNumber?: number;
+	/** Whole-series items whose files are all in this one season. */
+	onlySeason?: number;
 	title: string;
 	ruleId: string;
 	ruleName: string;
 	action: CleanupAction;
 	reason: string;
+	/** The satisfied sub-conditions behind `reason`, one object each. */
+	reasons?: MatchedReason[];
 	sizeOnDisk: number;
 	poster?: string | null;
 	certification?: string | null;
@@ -167,8 +171,8 @@ export function createEngine(deps: EngineDeps) {
 	 * Plex content ratings are loaded whenever Plex is connected (regardless of `needs.watch`) so
 	 * items without their own certification can fall back to Plex's.
 	 */
-	async function loadEvidence(needs: { watch: boolean; seerr: boolean }): Promise<{ watch: EvalContext["watch"]; seerr: EvalContext["seerr"]; cert: ((i: LibraryItem) => string | undefined) | null; warnings: string[] }> {
-		const out: { watch: EvalContext["watch"]; seerr: EvalContext["seerr"]; cert: ((i: LibraryItem) => string | undefined) | null; warnings: string[] } = { watch: null, seerr: null, cert: null, warnings: [] };
+	async function loadEvidence(needs: { watch: boolean; seerr: boolean }): Promise<{ watch: EvalContext["watch"]; seerr: EvalContext["seerr"]; cert: ((i: LibraryItem) => string | undefined) | null; added: ((i: LibraryItem) => Date | undefined) | null; warnings: string[] }> {
+		const out: { watch: EvalContext["watch"]; seerr: EvalContext["seerr"]; cert: ((i: LibraryItem) => string | undefined) | null; added: ((i: LibraryItem) => Date | undefined) | null; warnings: string[] } = { watch: null, seerr: null, cert: null, added: null, warnings: [] };
 		const enabled = store.instances.list().filter((i) => i.enabled);
 		const plexSources = enabled.filter((i) => i.type === "plex");
 		if (needs.watch && !plexSources.length) out.warnings.push("Watch-history rules are configured but no Plex instance is enabled; those rules cannot match");
@@ -180,6 +184,8 @@ export function createEngine(deps: EngineDeps) {
 					out.warnings.push(...loaded.flatMap((l) => l.warnings));
 				}
 				out.cert = combineCert(loaded.map((l) => l.certLookup));
+				const added = loaded.map((l) => l.addedLookup).filter((f): f is (i: LibraryItem) => Date | undefined => !!f);
+				out.added = (item) => added.map((f) => f(item)).reduce<Date | undefined>((m, d) => (d && (!m || d < m) ? d : m), undefined);
 			} catch (e) {
 				if (needs.watch) out.warnings.push(`Watch history: ${(e as Error).message}; watch-history rules cannot match this run`);
 			}
@@ -200,11 +206,13 @@ export function createEngine(deps: EngineDeps) {
 	}
 
 	/** Plex's content rating wins whenever Plex has the title; Sonarr/Radarr's own certification is used only when Plex doesn't have it. */
-	function applyCertFallback(items: LibraryItem[], cert: ((i: LibraryItem) => string | undefined) | null) {
-		if (!cert) return;
+	function applyCertFallback(items: LibraryItem[], ev: { cert: ((i: LibraryItem) => string | undefined) | null; added: ((i: LibraryItem) => Date | undefined) | null }) {
 		for (const item of items) {
-			const plexCert = cert(item);
+			const plexCert = ev.cert?.(item);
 			if (plexCert) item.certification = plexCert;
+			// Plex's add date is the age; a season with its own file dates keeps them (Plex only dates the whole show here).
+			const plexAdded = item.kind === "season" && item.files ? undefined : ev.added?.(item);
+			if (plexAdded) item.added = plexAdded;
 		}
 	}
 
@@ -252,7 +260,7 @@ export function createEngine(deps: EngineDeps) {
 		snap.ctx.watch = ev.watch;
 		snap.ctx.seerr = ev.seerr;
 		snap.warnings.push(...ev.warnings);
-		applyCertFallback(snap.items, ev.cert);
+		applyCertFallback(snap.items, ev);
 		return snap;
 	}
 
@@ -278,7 +286,9 @@ export function createEngine(deps: EngineDeps) {
 
 	// ── Planning ───────────────────────────────────────────────────────────
 	const targetKey = (i: LibraryItem) => `${i.instanceId}:${i.kind}:${i.arrId}${i.season ? `:${i.season.number}` : ""}`;
-	const seasonOf = (i: LibraryItem) => (i.season ? { seasonNumber: i.season.number } : {});
+	/** Protecting a series covers its seasons too. */
+	const covers = (keys: Set<string>, i: LibraryItem) => keys.has(targetKey(i)) || (i.kind === "season" && keys.has(`${i.instanceId}:series:${i.arrId}`));
+	const seasonOf = (i: LibraryItem) => (i.season ? { seasonNumber: i.season.number } : i.onlySeason != null ? { onlySeason: i.onlySeason } : {});
 
 	const detail = (c: Candidate, outcome: Outcome, message?: string): RunDetail => ({
 		instanceId: c.item.instanceId,
@@ -290,6 +300,7 @@ export function createEngine(deps: EngineDeps) {
 		ruleName: c.rule.name,
 		action: c.rule.action,
 		reason: c.reason,
+		reasons: c.reasons,
 		sizeOnDisk: c.item.sizeOnDisk,
 		poster: c.item.poster,
 		certification: c.item.certification,
@@ -308,8 +319,8 @@ export function createEngine(deps: EngineDeps) {
 		for (const item of snap.items) {
 			if (snap.failedInstances.has(item.instanceId)) continue;
 			const fake = (rule: RuleRecord, reason: string): Candidate => ({ item, rule, reason });
-			let protectedBy: string | null = protectedKeys.has(targetKey(item)) ? "Manually protected" : null;
-			if (!protectedBy && !overrideKeys.has(targetKey(item))) {
+			let protectedBy: string | null = covers(protectedKeys, item) ? "Manually protected" : null;
+			if (!protectedBy && !covers(overrideKeys, item)) {
 				for (const { rule, expr } of retention) {
 					if (!passesFilters(item, rule).ok) continue;
 					const r = evaluateExpression(expr, item, snap.ctx);
@@ -327,12 +338,16 @@ export function createEngine(deps: EngineDeps) {
 				// Season items are only for "delete season" rules, and those rules only see season items.
 				if ((item.kind === "season") !== (rule.action === "delete_season")) continue;
 				if (!passesFilters(item, rule).ok) continue;
+				if (!item.hasFile && !usesType(expr, "no_file")) continue; // nothing on disk to reclaim, e.g. a continuing series with no episodes yet
 				const r = evaluateExpression(expr, item, snap.ctx);
 				if (r.state !== "true") continue;
-				candidates.push({ item, rule, reason: r.reason });
+				candidates.push({ item, rule, reason: r.reason, reasons: matchedReasons(r) });
 				break;
 			}
 		}
+		// Removing a whole series already covers its seasons, so a season candidate beside its series' is a duplicate.
+		const wholeSeries = new Set(candidates.filter((c) => c.item.kind === "series").map((c) => `${c.item.instanceId}:${c.item.arrId}`));
+		for (let i = candidates.length - 1; i >= 0; i--) if (candidates[i]!.item.kind === "season" && wholeSeries.has(`${candidates[i]!.item.instanceId}:${candidates[i]!.item.arrId}`)) candidates.splice(i, 1);
 		return { candidates, protectedItems, evaluated: snap.items.filter((i) => i.kind !== "season").length };
 	}
 
@@ -397,7 +412,7 @@ export function createEngine(deps: EngineDeps) {
 			item = season;
 		}
 		const ev = await loadEvidence(needs);
-		applyCertFallback([item], ev.cert);
+		applyCertFallback([item], ev);
 
 		if (args.snapshot) {
 			const s = args.snapshot;
@@ -409,10 +424,10 @@ export function createEngine(deps: EngineDeps) {
 				live.fileCount !== s.fileCount || (s.fileIds && JSON.stringify(live.fileIds) !== JSON.stringify(s.fileIds)) ? "files changed" : null;
 			if (mismatch) return { ok: false, kind: "blocked", message: `Item changed since it was selected (${mismatch})` };
 		}
-		if (store.protected.targetKeys().has(targetKey(item))) return { ok: false, kind: "protected", message: "Manually protected" };
+		if (covers(store.protected.targetKeys(), item)) return { ok: false, kind: "protected", message: "Manually protected" };
 
 		const ctx: EvalContext = { now: now(), watch: ev.watch, seerr: ev.seerr, kidsMaxAge: store.config.get().kidsMaxAge };
-		const overridden = store.protected.targetKeys(true).has(targetKey(item));
+		const overridden = covers(store.protected.targetKeys(true), item);
 		for (const { rule: r, expr } of rules) {
 			if (overridden && r.mode === "retention") continue;
 			if (r.mode === "cleanup" && r.id !== args.ruleId) continue;
@@ -628,7 +643,7 @@ export function createEngine(deps: EngineDeps) {
 			item = season;
 		}
 		const ev = await loadEvidence(needs);
-		applyCertFallback([item], ev.cert);
+		applyCertFallback([item], ev);
 		const ctx: EvalContext = { now: now(), watch: ev.watch, seerr: ev.seerr, kidsMaxAge: store.config.get().kidsMaxAge };
 		const warnings = ev.warnings;
 		return {
@@ -748,14 +763,22 @@ export function createEngine(deps: EngineDeps) {
 
 	// ── External links ────────────────────────────────────────────────────
 	/** Deep link into the Sonarr/Radarr web UI, which routes by title slug rather than the internal id. */
-	async function externalLink(instanceId: string, arrItemId: number): Promise<{ url: string }> {
+	async function externalLink(instanceId: string, arrItemId: number): Promise<{ url: string; plexUrl: string | null }> {
 		const inst = store.instances.get(instanceId);
 		if (!inst || (inst.type !== "sonarr" && inst.type !== "radarr")) throw new ConflictError("Unknown Sonarr/Radarr instance");
 		const api = deps.arr(inst);
 		const raw = await api.get(arrItemId);
 		const slug = typeof raw.titleSlug === "string" && raw.titleSlug ? raw.titleSlug : String(arrItemId);
 		const root = inst.type === "sonarr" ? "series" : "movie";
-		return { url: `${inst.url}/${root}/${slug}` };
+		let plexUrl: string | null = null;
+		const num = (v: unknown) => (typeof v === "number" ? v : null);
+		for (const plex of store.instances.list().filter((i) => i.enabled && i.type === "plex")) {
+			try {
+				plexUrl = (await deps.watch(plex).link?.({ kind: inst.type === "sonarr" ? "show" : "movie", title: String(raw.title ?? ""), tmdbId: num(raw.tmdbId), tvdbId: num(raw.tvdbId) })) ?? null;
+			} catch (e) { log.warn({ instance: plex.name, err: (e as Error).message }, "plex link failed"); }
+			if (plexUrl) break;
+		}
+		return { url: `${inst.url}/${root}/${slug}`, plexUrl };
 	}
 
 	// ── Episodes ───────────────────────────────────────────────────────────

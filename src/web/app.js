@@ -39,6 +39,10 @@ const ICONS = {
 	why: [["circle", { cx: 8, cy: 8, r: 6 }], ["path", { d: "M6.2 6.3a1.8 1.8 0 1 1 2.5 1.7c-.5.2-.7.6-.7 1.1v.3M8 11.2v.1" }]],
 	code: [["path", { d: "M5.5 4.5L2 8l3.5 3.5M10.5 4.5L14 8l-3.5 3.5" }]],
 	arrow: [["path", { d: "M3 8h10M9 4l4 4-4 4" }]],
+	// Simplified platform marks (filled): Plex chevron, Radarr target, Sonarr wave.
+	plex: [["path", { d: "M4.5 1.5h3.6L12.5 8l-4.4 6.5H4.5L8.9 8z", fill: "currentColor", stroke: "none" }]],
+	radarr: [["path", { d: "m80.3 80.8 3.9 372.4c-31.4 3.9-54.9-11.8-54.9-43.1l-3.9-309.7c0-98 90.2-121.5 145.1-82.3l278.3 160.7c39.2 27.4 47 78.4 27.4 113.7-3.9-27.4-15.7-43.1-39.2-58.8L123.4 57.2C99.9 41.6 80.3 45.5 80.3 80.8m-23.5 392c23.5 7.8 47 3.9 66.6-7.8l321.5-188.2c19.6 27.4 15.7 54.9-7.8 70.6L166.5 504.2c-39.2 19.6-90.1 0-109.7-31.4M150.9 363 343 253.3 154.8 147.4z", transform: "scale(.03125)", fill: "currentColor", stroke: "none" }]],
+	sonarr: [["path", { d: "m459.7 100.3-52.9 52.9c-30.9 30.9-33.6 57.8-33.6 105.3 0 42.3 6.7 81.1 38.2 112.6 23 23 44.9 44.7 44.9 44.7-5.9 7.2-12.3 14.3-19.1 21.2-1.7 2-3.5 3.8-5.5 5.4-6 5.9-12.2 11.4-18.6 16.4l-41.4-41.4C334.9 380.6 305.6 377 257 377c-46.7 0-78.4 4.3-112.6 38.5-20.4 20.4-43.8 43.9-43.8 43.9-8.9-6.8-17.3-14.2-25.3-22.4-6.6-6.6-12.8-13.4-18.5-20.3 0 0 23.1-23.2 45.2-45.3 32.7-32.7 38-70.6 38-113 0-41.3-6.8-79.8-36.8-109.9C82.2 127.7 53.3 99 53.3 99c6.7-8.5 14-16.7 21.8-24.5 6.9-6.8 14-13.1 21.2-19l48 48c30.7 30.7 70 38.6 112.4 38.6 43.6 0 82.8-8.4 114.7-40.4C391 82.1 417 56.3 417 56.3c6.8 5.6 13.5 11.6 20.1 18.2 8.3 8.3 15.8 16.9 22.6 25.8", transform: "scale(.03125)", fill: "currentColor", stroke: "none", "fill-rule": "evenodd" }], ["path", { d: "M186 269.1c-.5-2.8-.8-5.5-.9-8.4-.1-1.6-.1-3.1-.1-4.7 0-1.7 0-3.2.1-4.7 0-.2 0-.3.1-.5 1-17.4 7.9-32.4 20.5-45.1 13.9-13.8 30.6-20.7 50.2-20.7s36.3 6.9 50.2 20.7c13.8 14 20.7 30.8 20.7 50.3s-6.9 36.2-20.7 50.2c-.5.5-1 1.1-1.5 1.5q-3.45 3.3-7.2 6-18 13.2-41.4 13.2c-23.4 0-29.4-4.4-41.3-13.2-3.1-2.2-6.1-4.7-8.9-7.6-10.8-10.6-17.3-22.9-19.8-37", transform: "scale(.03125)", fill: "currentColor", stroke: "none", "fill-rule": "evenodd" }]],
 	external: [["path", { d: "M6.5 3H3.5v9.5H13V9.5" }], ["path", { d: "M8.5 3H13v4.5" }], ["path", { d: "M13 3L7 9" }]],
 };
 function icon(name) {
@@ -72,10 +76,18 @@ const serviceTag = (svc) => h("span", { class: "tag service" }, SERVICE_LABEL[sv
 
 /** A button that opens the item's Sonarr/Radarr page in a new tab. `d` needs instanceId, arrItemId, itemType. */
 function openInArrBtn(d, cls = "ghost small") {
-	const label = `Open in ${d.itemType === "movie" ? "Radarr" : "Sonarr"}`;
-	return iconBtn("external", label, (e) => guard(e.currentTarget, async () => {
+	const svc = d.itemType === "movie" ? "radarr" : "sonarr";
+	return iconBtn(svc, `Open in ${SERVICE_LABEL[svc]}`, (e) => guard(e.currentTarget, async () => {
 		const { url } = await api(`/link/${encodeURIComponent(d.instanceId)}/${d.arrItemId}`);
 		window.open(url, "_blank", "noopener");
+	}), cls);
+}
+/** Opens the item in Plex's web app; reports when Plex isn't connected or doesn't have the title. */
+function openInPlexBtn(d, cls = "ghost small") {
+	return iconBtn("plex", "Open in Plex", (e) => guard(e.currentTarget, async () => {
+		const { plexUrl } = await api(`/link/${encodeURIComponent(d.instanceId)}/${d.arrItemId}`);
+		if (plexUrl) window.open(plexUrl, "_blank", "noopener");
+		else toast("Not found in Plex");
 	}), cls);
 }
 /** Toggle that manually protects/unprotects the item; shows the action it will take. `d` needs instanceId, arrItemId, itemType, title, optional seasonNumber. */
@@ -88,7 +100,7 @@ function protectBtn(d, cls = "ghost small", onChange) {
 	const btn = h("button", { type: "button", class: cls, onclick: (e) => guard(e.currentTarget, async () => {
 		if (id) { await api(`/protected/${id}`, { method: "DELETE" }); id = null; }
 		else id = (await api("/protected", { method: "POST", body: { instanceId: d.instanceId, arrItemId: d.arrItemId, itemType: d.itemType, seasonNumber: d.seasonNumber ?? null, title: d.title } })).id;
-		set();
+		set(); onChange?.();
 		toast(`${id ? "Protected" : "Unprotected"} ${nameOf(d)}`);
 	}) });
 	set();
@@ -341,15 +353,16 @@ function posterCard(c, cfg) {
 	const art = c.poster
 		? h("img", { src: c.poster, alt: "", loading: "lazy", decoding: "async", onerror: (e) => e.target.replaceWith(h("span", { class: "noart" }, c.title)) })
 		: h("span", { class: "noart" }, c.title);
-	return h("div", { role: "listitem", "data-key": volser(c) }, h("button", { type: "button", class: `poster ${frees(c) ? "" : "keep"}`, "aria-label": `${nameOf(c)}, ${bytes(c.sizeOnDisk)}, ${c.ruleName}`, onclick: () => {
+	const card = h("div", { role: "listitem", "data-key": volser(c) }, h("button", { type: "button", class: `poster ${frees(c) ? "" : "keep"}`, "aria-label": `${nameOf(c)}, ${bytes(c.sizeOnDisk)}, ${c.ruleName}`, onclick: () => {
 			let changed = false;
-			// A protected item no longer matches a cleanup rule: refresh the dashboard once the dialog closes.
-			dialog.addEventListener("close", () => { if (changed) { lastPreview = null; route(); } }, { once: true });
-			openDialog({ kind: "wide", title: nameOf(c), body: [titleDetail(c, () => { changed = true; }, cfg)], foot: [closeBtn()], onClose: () => dialog.close() });
+			// A protected item no longer matches a cleanup rule: drop just its card once the dialog closes (stale preview is refetched next time).
+			dialog.addEventListener("close", () => { if (changed) { lastPreview = null; card.remove(); } }, { once: true });
+			openDialog({ kind: "wide", title: nameOf(c), body: [titleDetail(c, () => { changed = !changed; }, cfg)], foot: [closeBtn()], onClose: () => dialog.close() });
 		} },
-		h("span", { class: "art" }, art, c.seasonNumber != null ? h("span", { class: "badge" }, `S${c.seasonNumber}`) : null, h("span", { class: "size" }, bytes(c.sizeOnDisk)),
+		h("span", { class: "art" }, art, (c.seasonNumber ?? c.onlySeason) != null ? h("span", { class: "badge" }, `S${c.seasonNumber ?? c.onlySeason}`) : null, h("span", { class: "size" }, bytes(c.sizeOnDisk)),
 			countdownBadge(c, cfg) ? h("span", { class: "countdown" }, countdownBadge(c, cfg)) : null),
 		h("span", { class: "cap" }, h("span", { class: "t" }, c.title), h("span", { class: "m" }, c.ruleName))));
+	return card;
 }
 /** Queue status line for the detail view: when it's due, that a retry is pending and why it failed, or (not yet queued) an estimate of when it would be. */
 function queueStatus(c, cfg) {
@@ -391,8 +404,8 @@ function titleDetail(c, onProtect, cfg) {
 			impactBlock(c),
 			h("dl", { class: "basis" },
 				h("dt", {}, "Rated"), h("dd", {}, c.certification ? h("span", { class: "cert" }, c.certification) : h("span", { class: "faint" }, "Not rated")),
-				h("dt", {}, "Rule"), h("dd", {}, c.ruleName), h("dt", {}, "Matched"), h("dd", {}, plainReason(c.reason))),
-			h("div", { class: "acts" }, whyButton(c, why), openInArrBtn(c, "small"), protectBtn(c, "small", onProtect), queueActs(c))),
+				h("dt", {}, "Rule"), h("dd", {}, c.ruleName), h("dt", {}, "Matched"), matchedTree(c)),
+			h("div", { class: "acts" }, whyButton(c, why), openInArrBtn(c, "small"), openInPlexBtn(c, "small"), protectBtn(c, "small", onProtect), queueActs(c))),
 		why);
 }
 // Evaluation reasons for AND/OR rules arrive wrapped in one pair of brackets; drop it for reading.
@@ -531,7 +544,8 @@ async function renderProtected() {
 		const seen = new Set(prot.map(key));
 		if (mode === "all") items = items.filter((p) => !seen.has(key(p)));
 		if (mode === "manual" && !items.length) { bar.replaceChildren(); body.replaceChildren(empty("Nothing manually protected")); return; }
-		body.replaceChildren(...(mode === "all" ? [skippedList(prot, toggle, pickBox)] : []), ...(items.length ? [manualList(items, manualToggle)] : []));
+		const head = (t, n) => mode === "all" && n ? [h("div", { class: "section-title" }, h("h2", {}, t), h("span", { class: "faint small" }, n.toLocaleString()))] : [];
+		body.replaceChildren(...(mode === "all" ? [...head("Protected by rules", prot.length), skippedList(prot, toggle, pickBox)] : []), ...(items.length ? [...head("Manually protected", items.length), manualList(items, manualToggle)] : []));
 	};
 	/** Headline numbers across every instance: rule-protected titles plus manual ones not already counted. */
 	const paintStats = (prot, items) => {
@@ -653,14 +667,23 @@ function whyButton(d, slot, wrap = slot, cls = "", iconOnly = false) {
 	}) }, icon("why"), iconOnly ? null : "Why?");
 	return btn;
 }
+const MARK = { true: ["check", "st state yes"], false: ["x", "st state loaded"], unknown: ["unknown", "st state unknown"] };
+function condTree(n) { const [ic, cls] = MARK[n.state] || MARK.unknown; return h("li", {}, h("span", { class: cls, style: "font:inherit;white-space:normal" }, icon(ic), n.type ? h("span", { class: n.state === "true" ? "" : "muted" }, n.reason) : h("span", { class: "op" }, n.op.toUpperCase())), n.children ? h("ul", {}, n.children.map(condTree)) : null); }
+/** The "Matched" cell: one ticked row per satisfied sub-condition the server sent with the candidate. */
+function matchedTree(c) {
+	const rows = c.reasons?.length ? c.reasons : [{ text: plainReason(c.reason) }];
+	return h("dd", {}, h("ul", { class: "tree flat" }, rows.map((r) => h("li", {}, h("span", { class: "st state yes", style: "font:inherit;white-space:normal" }, icon("check"), h("span", {}, r.text))))));
+}
 function explainBody(e) {
-	const mark = { true: ["check", "st state yes"], false: ["x", "st state loaded"], unknown: ["unknown", "st state unknown"] };
-	const tree = (n) => { const [ic, cls] = mark[n.state] || mark.unknown; return h("li", {}, h("span", { class: cls, style: "font:inherit;white-space:normal" }, icon(ic), n.type ? h("span", { class: n.state === "true" ? "" : "muted" }, n.reason) : h("span", { class: "op" }, n.op.toUpperCase())), n.children ? h("ul", {}, n.children.map(tree)) : null); };
+	const tree = condTree;
 	const verdict = (r) => !r.inScope ? state("out_of_scope") : r.state === "true" ? (r.mode === "retention" ? state("protected", "Protects it") : state("matches")) : r.state === "false" ? state("no_match") : state("unknown");
+	const ruleVerdict = (r) => h("div", { class: "verdict" }, h("div", { class: "row" }, h("strong", {}, r.name), r.mode === "retention" ? protectTag() : actionTag(r.action), h("span", { class: "grow" }), verdict(r)), r.excludedBy ? h("div", { class: "help" }, r.excludedBy) : null, r.tree ? h("ul", { class: "tree" }, tree(r.tree)) : null);
+	const out = e.rules.filter((r) => !r.inScope);
 	return h("div", { class: "explain" },
 		h("div", { class: "itemfacts" }, h("span", {}, e.item.seasonNumber != null ? `Season ${e.item.seasonNumber}` : kindLabel(e.item.kind)), h("span", {}, h("b", {}, bytes(e.item.sizeOnDisk))), h("span", {}, e.item.monitored ? "Monitored" : "Unmonitored"), e.item.path ? h("span", { class: "mono" }, e.item.path) : null),
 		e.warnings.length ? h("div", { class: "notices" }, e.warnings.map((w) => notice(w))) : null,
-		e.rules.map((r) => h("div", { class: "verdict" }, h("div", { class: "row" }, h("strong", {}, r.name), r.mode === "retention" ? protectTag() : actionTag(r.action), h("span", { class: "grow" }), verdict(r)), r.excludedBy ? h("div", { class: "help" }, r.excludedBy) : null, r.tree ? h("ul", { class: "tree" }, tree(r.tree)) : null)));
+		e.rules.filter((r) => r.inScope).map(ruleVerdict),
+		out.length ? h("details", { class: "out-of-scope" }, h("summary", { class: "help" }, `${out.length} out of scope`), out.map(ruleVerdict)) : null);
 }
 
 // ── Library ────────────────────────────────────────────────────────────────
@@ -778,38 +801,55 @@ let ruleTypes = [];
 async function renderRules() {
 	const [rules, types, templates, instances] = await Promise.all([api("/rules"), api("/rule-types"), api("/rule-templates"), api("/instances")]);
 	ruleTypes = types;
-	const out = h("div", {}, h("div", { class: "page-head" }, h("div", {}, h("h1", {}, "Rules"), h("p", { class: "lede" }, "Evaluated top to bottom. The first matching cleanup rule decides what happens; protect rules always win.")), h("button", { type: "button", class: "primary", onclick: () => editRule() }, icon("plus"), "New rule")));
-	if (!rules.length) return out.append(h("div", { class: "panel" }, empty("No rules yet", "Start from a template below or write your own. The dashboard previews exactly what a rule would match before anything changes.")), templatesSection(templates, instances, true)), out;
-	const move = async (i, d) => { const ids = rules.map((r) => r.id); [ids[i], ids[i + d]] = [ids[i + d], ids[i]]; try { await api("/rules/reorder", { method: "PUT", body: { ids } }); lastPreview = null; route(); } catch (e) { fail(e); } };
+	const out = h("div", {}, h("div", { class: "page-head" }, h("div", {}, h("h1", {}, "Rules"), h("p", { class: "lede" }, "Evaluated top to bottom. The first matching cleanup rule decides what happens; protect rules always win.")), h("div", { class: "row", style: "gap:8px" }, h("button", { type: "button", onclick: () => editRule() }, icon("plus"), "Blank rule"), h("button", { type: "button", class: "primary", onclick: () => { const t = document.getElementById("templates"); t?.scrollIntoView({ behavior: "smooth" }); t?.querySelector("button.primary")?.focus({ preventScroll: true }); } }, "Add from template"))));
+	if (!rules.length) return out.append(h("div", { class: "panel" }, empty("No rules yet", "Pick a template from the library below, or write your own. The dashboard previews exactly what a rule would match before anything changes.")), templatesSection(templates, instances, rules)), out;
+	const cleanup = rules.filter((r) => r.mode !== "retention"), protect = rules.filter((r) => r.mode === "retention");
+	const move = async (list, i, d) => { const g = list.map((r) => r.id); [g[i], g[i + d]] = [g[i + d], g[i]]; const ids = [...(list === protect ? cleanup.map((r) => r.id) : g), ...(list === protect ? g : protect.map((r) => r.id))]; try { await api("/rules/reorder", { method: "PUT", body: { ids } }); lastPreview = null; route(); } catch (e) { fail(e); } };
 	const toggle = async (r, e, li) => { const on = e.target.checked; try { await api(`/rules/${r.id}`, { method: "PUT", body: { enabled: on } }); li.classList.toggle("off", !on); lastPreview = null; } catch (x) { e.target.checked = !on; fail(x); } };
 	const remove = async (r) => { if (!(await ask({ title: `Delete “${r.name}”?`, text: "The rule is removed. Its history stays in the audit trail.", action: "Delete rule", danger: true }))) return; try { await api(`/rules/${r.id}`, { method: "DELETE" }); lastPreview = null; route(); } catch (e) { fail(e); } };
-	const row = (r, i) => {
+	const row = (list) => (r, i) => {
 		const li = h("li", { class: r.enabled ? "" : "off" });
-		const up = iconBtn("up", "Move up", () => move(i, -1), "ghost"), down = iconBtn("down", "Move down", () => move(i, 1), "ghost");
-		up.disabled = i === 0; down.disabled = i === rules.length - 1;
+		const up = iconBtn("up", "Move up", () => move(list, i, -1), "ghost"), down = iconBtn("down", "Move down", () => move(list, i, 1), "ghost");
+		up.disabled = i === 0; down.disabled = i === list.length - 1;
 		li.append(h("div", { class: "slotno", title: `Priority ${i + 1}` }, String(i + 1).padStart(2, "0")),
 			h("input", { type: "checkbox", class: "toggle", checked: r.enabled, "aria-label": `${r.name} enabled`, onchange: (e) => toggle(r, e, li) }),
 			h("div", { class: "body" }, h("div", { class: "nm" }, h("strong", {}, r.name), r.mode === "retention" ? protectTag() : actionTag(r.action), r.serviceFilter?.map(serviceTag)), h("div", { class: "expr" }, humanExpr(r.expression))),
 			h("div", { class: "acts" }, up, down, iconBtn("edit", `Edit ${r.name}`, () => editRule(r), "ghost"), iconBtn("trash", `Delete ${r.name}`, () => remove(r), "ghost danger")));
 		return li;
 	};
-	out.append(h("div", { class: "panel" }, h("ul", { class: "rules" }, rules.map(row))), templatesSection(templates, instances));
+	const section = (title, sub, list) => list.length ? [h("div", { class: "section-title" }, h("h2", {}, title), h("span", { class: "faint small" }, sub)), h("div", { class: "panel" }, h("ul", { class: "rules" }, list.map(row(list))))] : [];
+	out.append(...section("Cleanup rules", "The first matching rule decides the action.", cleanup), ...section("Protect rules", "Matching titles are never touched by a cleanup rule.", protect), templatesSection(templates, instances, rules));
 	return out;
 }
-function templatesSection(templates, instances, open) {
+const tplFilter = { group: "all", svc: "all" }; // survives the re-render after a rule is saved
+function templatesSection(templates, instances, rules = []) {
 	const has = (t) => instances.some((i) => i.enabled && i.type === t);
 	const needs = (n) => [n.watch && ["Plex", "plex"], n.seerr && ["Seerr", "seerr"]].filter(Boolean);
 	const row = (t) => {
 		const missing = needs(t.needs).filter(([, k]) => !has(k)).map(([l]) => l);
 		return h("li", {},
-			h("div", { class: "body" }, h("div", { class: "nm" }, h("strong", {}, t.title), t.mode === "retention" ? protectTag() : actionTag(t.action)),
+			h("div", { class: "body" }, h("div", { class: "nm" }, h("strong", {}, t.title), t.mode === "retention" ? protectTag() : actionTag(t.action), (t.serviceFilter || []).map(serviceTag)),
 				h("p", { class: "desc" }, t.description),
 				h("div", { class: "expr" }, humanExpr(t.expression)),
 				missing.length ? h("div", { class: "need" }, state("unknown", `Needs ${missing.join(" and ")} connected`)) : null),
-			h("div", { class: "acts" }, h("button", { type: "button", onclick: () => editRule(null, t) }, "Use template")));
+			h("div", { class: "acts" }, h("button", { type: "button", class: "primary", onclick: () => editRule(null, t) }, "Use template")));
 	};
-	return h("section", { style: "margin-top:32px" }, h("div", { class: "section-title" }, h("h2", {}, "Templates"), h("span", { class: "faint small" }, "Common scenarios. Nothing is saved until you review and create the rule.")),
-		h("div", { class: "panel" }, h("ul", { class: "rules templates" }, templates.map(row))));
+	const groups = [...new Set(templates.map((t) => t.group))];
+	const count = (f) => templates.filter(f).length;
+	const grp = segmented("Group", [["all", `All ${templates.length}`], ...groups.map((g) => [g, `${g} ${count((t) => t.group === g)}`])], tplFilter.group);
+	grp.classList.add("wrap");
+	const svc = segmented("Services", [["all", "Radarr + Sonarr"], ["radarr", "Radarr"], ["sonarr", "Sonarr"]], tplFilter.svc);
+	const list = h("ul", { class: "rules templates" });
+	const paint = () => {
+		const g = grp.value(), v = svc.value(); Object.assign(tplFilter, { group: g, svc: v });
+		const shown = templates.filter((t) => (g === "all" || t.group === g) && (v === "all" || !t.serviceFilter || t.serviceFilter.includes(v)));
+		list.replaceChildren(...(shown.length ? shown.map(row) : [h("li", {}, h("div", { class: "body faint" }, "No templates match these filters."))]));
+	};
+	grp.addEventListener("change", paint); svc.addEventListener("change", paint);
+	paint();
+	return h("section", { id: "templates", style: "margin-top:32px" }, h("div", { class: "section-title" }, h("h2", {}, "Template library"), h("span", { class: "faint small" }, "The quickest way to add a rule. Nothing is saved until you review and create it.")),
+		h("div", { class: "row", style: "gap:12px;flex-wrap:wrap;margin-bottom:12px" }, svc, grp),
+		h("div", { class: "panel" }, list));
 }
 const typeDef = (t) => ruleTypes.find((x) => x.type === t);
 function paramText(type, params) {
@@ -823,7 +863,8 @@ function humanExpr(e) {
 	if (e.op === "not") return [h("span", { class: "op" }, "NOT"), " ", humanExpr(e.of)];
 	return e.of.flatMap((c, i) => [i ? [" ", h("span", { class: "op" }, e.op.toUpperCase()), " "] : null, c.op && c.op !== "not" ? ["(", humanExpr(c), ")"] : humanExpr(c)]);
 }
-const isFlat = (e) => { const leaf = (n) => n.type || (n.op === "not" && n.of.type); return leaf(e) || ((e.op === "and" || e.op === "or") && e.of.every(leaf)); };
+// What the builder can show: conditions (optionally negated) inside nested AND / OR groups. NOT around a whole group needs JSON.
+const buildable = (e) => !!e.type || (e.op === "not" ? !!e.of?.type : (e.op === "and" || e.op === "or") && Array.isArray(e.of) && e.of.every(buildable));
 
 // Seerr users, loaded when the rule editor opens; empty when Seerr isn't connected (fields fall back to free text).
 let requesters = [];
@@ -923,7 +964,7 @@ const friendlyIssue = (line) => line.replace(/^expression[.\w]*: /, "").replace(
 const DEFAULT_LEAF = { type: "age", params: { operator: "older_than", days: 365 } };
 async function editRule(rule, tpl) {
 	try { [ruleTypes, requesters] = await Promise.all([ruleTypes.length ? ruleTypes : api("/rule-types"), api("/requesters").catch(() => [])]); } catch (e) { return fail(e); }
-	const src = rule || (tpl && { name: tpl.title, mode: tpl.mode, action: tpl.action, expression: tpl.expression, serviceFilter: tpl.serviceFilter });
+	const src = rule || (tpl && { name: tpl.title, mode: tpl.mode, action: tpl.action, expression: tpl.expression, serviceFilter: tpl.serviceFilter, serviceLocked: tpl.serviceFilter?.length === 1 });
 	const exprIn = src?.expression;
 	const field = (label, input, help) => { input.id ||= uid(); return h("div", { class: "field" }, h("label", { class: "lbl", htmlFor: input.id }, label), input, help ? h("div", { class: "help" }, help) : null); };
 	const fieldset = (label, control, help) => h("fieldset", { class: "field" }, h("legend", { class: "lbl" }, label), control, help || null);
@@ -933,32 +974,23 @@ async function editRule(rule, tpl) {
 	const nameField = field("Name", name); nameField.append(nameErr);
 	const mode = segmented("Rule type", [["cleanup", "Cleanup"], ["retention", "Protect"]], src?.mode || "cleanup");
 	const modeHelp = h("div", { class: "help" });
-	const action = h("select", {}, [["delete", "Delete: remove from library and delete files"], ["delete_files", "Delete files, keep in library"], ["delete_season", "Delete season: one season's files, then unmonitor it (Sonarr)"], ["unmonitor", "Unmonitor only (frees no space)"]].map(([v, l]) => h("option", { value: v, selected: v === (src?.action || "delete") }, l)));
+	const seasonOnly = src?.serviceLocked && src.action === "delete_season"; // season template: the action is fixed too
+	const action = h("select", {}, [["delete", "Delete: remove from library and delete files"], ["delete_files", "Delete files, keep in library"], ["delete_season", "Delete season: one season's files, then unmonitor it (Sonarr)"], ["unmonitor", "Unmonitor only (frees no space)"]].filter(([v]) => !seasonOnly || v === "delete_season").map(([v, l]) => h("option", { value: v, selected: v === (src?.action || "delete") }, l)));
 	const actionField = field("Action", action);
+	if (seasonOnly) action.disabled = true;
 	const syncMode = () => { const protect = mode.value() === "retention"; actionField.hidden = protect; modeHelp.textContent = protect ? "Matching items are never touched by any cleanup rule." : "Matching items are flagged for the action below. The first matching cleanup rule wins."; };
 	mode.addEventListener("change", syncMode); syncMode();
 
-	// Conditions: a flat builder, or JSON for nested expressions.
-	const combo = h("select", { "aria-label": "Combine conditions" }, [["and", "all"], ["or", "any"]].map(([v, l]) => h("option", { value: v }, l)));
-	const comboRow = h("div", { class: "combine" }, "Match when", combo, "of these are true");
-	const conds = h("div");
-	const syncConds = () => { const n = conds.children.length; comboRow.hidden = n < 2; [...conds.children].forEach((r) => (r.querySelector(".rm").disabled = n === 1)); };
-	const loadBuilder = (expr) => {
-		combo.value = expr?.op === "or" ? "or" : "and";
-		const leaves = !expr ? [DEFAULT_LEAF] : expr.type || expr.op === "not" ? [expr] : expr.of;
-		conds.replaceChildren();
-		for (const l of leaves) condRow(conds, l.op === "not" ? { ...l.of, negate: true } : l, syncConds);
-	};
+	// Conditions: the nested group builder, or JSON for what it can't show.
+	const builder = h("div");
+	let root;
+	const loadBuilder = (expr) => builder.replaceChildren((root = condGroup(expr, 0)));
 	const json = h("textarea", { rows: 14, "aria-label": "Expression JSON", value: JSON.stringify(exprIn || DEFAULT_LEAF, null, 2) });
 	const jsonErr = h("div", { class: "field-error", hidden: true });
-	let jsonMode = !!exprIn && !isFlat(exprIn);
+	let jsonMode = !!exprIn && !buildable(exprIn);
 	if (!jsonMode) loadBuilder(exprIn);
-	const builder = h("div", {}, comboRow, conds, h("button", { type: "button", onclick: () => condRow(conds, DEFAULT_LEAF, syncConds) }, icon("plus"), "Add condition"));
 	const jsonBox = h("div", {}, h("p", { class: "help", style: "margin-top:0" }, "For nested logic: {op: \"and\" | \"or\" | \"not\", of: …} groups around {type, params} conditions."), json, jsonErr);
-	const builderExpr = () => {
-		const items = [...conds.children].map((r) => r.read()).map((c) => { const leaf = { type: c.type, params: c.params }; return c.negate ? { op: "not", of: leaf } : leaf; });
-		return items.length === 1 ? items[0] : { op: combo.value, of: items };
-	};
+	const builderExpr = () => root.read() || DEFAULT_LEAF;
 	const buildExpr = () => (jsonMode ? JSON.parse(json.value) : builderExpr());
 	const toggle = h("button", { type: "button", class: "small ghost" });
 	const paintToggle = () => { builder.hidden = jsonMode; jsonBox.hidden = !jsonMode; toggle.replaceChildren(icon("code"), jsonMode ? "Use builder" : "Edit as JSON"); };
@@ -966,12 +998,16 @@ async function editRule(rule, tpl) {
 		if (!jsonMode) { json.value = JSON.stringify(builderExpr(), null, 2); jsonErr.hidden = true; jsonMode = true; return paintToggle(); }
 		// Back to the builder only when the JSON can be represented there; never drop the user's edits.
 		let expr; try { expr = JSON.parse(json.value); } catch (x) { jsonErr.textContent = `Fix the JSON first: ${x.message}`; jsonErr.hidden = false; return; }
-		if (!isFlat(expr)) { jsonErr.textContent = "This expression nests groups, which the builder can't show. Keep editing it as JSON."; jsonErr.hidden = false; return; }
+		if (!buildable(expr)) { jsonErr.textContent = "This expression negates a whole group, which the builder can't show. Keep editing it as JSON."; jsonErr.hidden = false; return; }
 		jsonErr.hidden = true; loadBuilder(expr); jsonMode = false; paintToggle();
 	});
 	paintToggle();
 
-	const services = segmented("Services", [["all", "All"], ["radarr", "Radarr"], ["sonarr", "Sonarr"]], src?.serviceFilter?.length === 1 ? src.serviceFilter[0] : "all");
+	const avail = new Set((await api("/instances").catch(() => [])).filter((i) => i.enabled && (i.type === "radarr" || i.type === "sonarr")).map((i) => i.type));
+	src?.serviceFilter?.forEach((v) => avail.add(v)); // keep a saved rule's current service selectable
+	const locked = src?.serviceLocked && src.serviceFilter?.length === 1 ? src.serviceFilter[0] : null; // created from a single-platform template: service is fixed
+	const services = segmented("Services", [["all", "All"], ["radarr", "Radarr"], ["sonarr", "Sonarr"]].filter(([v]) => locked ? v === locked : v === "all" ? avail.size > 1 : avail.has(v)), locked || (src?.serviceFilter?.length === 1 ? src.serviceFilter[0] : "all"));
+	if (locked) services.querySelectorAll("input").forEach((i) => { i.disabled = true; });
 	const tags = h("input", { value: (src?.excludeTags || []).join(", "), placeholder: "e.g. keep" });
 	const titleRx = h("input", { value: (src?.excludeTitles || []).join(", "), placeholder: "e.g. ^Star Wars" });
 	titleRx.id = uid();
@@ -991,7 +1027,7 @@ async function editRule(rule, tpl) {
 		let expression;
 		try { expression = buildExpr(); } catch (x) { if (jsonMode) { jsonErr.textContent = `Invalid JSON: ${x.message}`; jsonErr.hidden = false; return json.focus(); } return showErrors([x.message]); }
 		const svc = services.value();
-		const body = { name: name.value.trim(), mode: mode.value(), action: action.value, expression, serviceFilter: svc === "all" ? null : [svc], excludeTags: list(tags), excludeTitles: list(titleRx) };
+		const body = { name: name.value.trim(), mode: mode.value(), action: action.value, expression, serviceFilter: svc === "all" ? null : [svc], serviceLocked: !!locked, excludeTags: list(tags), excludeTitles: list(titleRx) };
 		save.disabled = true; save.classList.add("busy");
 		try {
 			await api(rule ? `/rules/${rule.id}` : "/rules", { method: rule ? "PUT" : "POST", body });
@@ -1042,7 +1078,7 @@ async function renderHistory() {
 			h("td", { class: "num" }, h("button", { type: "button", class: "small", onclick: details(r) }, "Details"))))))) : h("div", { class: "panel" }, empty("No runs yet", "Run cleanup from the dashboard, or turn on the schedule in Settings."))));
 	out.append(h("section", {}, h("div", { class: "section-title" }, h("h2", {}, "Audit trail")), audit.length ? h("div", { class: "panel table-wrap" }, h("table", {},
 		h("thead", {}, h("tr", {}, h("th", {}, "When"), h("th", {}, "Event"), h("th", {}, "Item"), h("th", {}, "Actor"), h("th", {}, "Detail"))),
-		h("tbody", {}, audit.map((e) => h("tr", {}, h("td", { class: "small" }, timeEl(e.created_at)), h("td", {}, state(auditState(e.outcome), e.event_type.replaceAll("_", " "))), h("td", {}, e.title, h("div", { class: "sub" }, `${e.rule_name || "—"} · ${e.action}`)), h("td", { class: "small" }, `${e.actor} (${e.trigger})`), h("td", { class: "small" }, e.reason)))))) : h("div", { class: "panel" }, empty("No activity yet", "Selections, approvals and removals are recorded here."))));
+		h("tbody", {}, audit.map((e) => h("tr", {}, h("td", { class: "small" }, timeEl(e.created_at)), h("td", {}, state(auditState(e.outcome), e.event_type.replaceAll("_", " "))), h("td", {}, e.title, h("div", { class: "sub" }, `${e.rule_name || "—"} · ${e.action}`)), h("td", { class: "small" }, `${e.actor} (${e.trigger})`), h("td", { class: "small" }, e.reason)))))) : h("div", { class: "panel" }, empty("No activity yet", "Every rule match, approval, block, failure and removal from your media library is recorded here."))));
 	return out;
 }
 
@@ -1125,3 +1161,24 @@ async function renderSettings() {
 }
 
 route();
+
+/** A group of conditions and nested sub-groups joined by all (AND) / any (OR). read() returns an expression, or null when empty. */
+function condGroup(expr, depth) {
+	const combo = h("select", { "aria-label": "Combine conditions" }, [["and", "all"], ["or", "any"]].map(([v, l]) => h("option", { value: v, selected: v === (expr?.op === "or" ? "or" : "and") }, l)));
+	const kids = h("div", { class: "grp-kids" });
+	const el = h("div", { class: depth ? "grp sub" : "grp", "data-op": combo.value });
+	combo.addEventListener("change", () => (el.dataset.op = combo.value));
+	const sync = () => { const n = kids.children.length; for (const k of kids.children) k.querySelector(":scope > .rm, :scope > .grp-head > .rm").disabled = !depth && n === 1; };
+	const addGroup = (c) => { const g = condGroup(c, depth + 1); g.onchange = sync; kids.append(g); };
+	const add = (c) => (c.op === "and" || c.op === "or" ? addGroup(c) : condRow(kids, c.op === "not" ? { ...c.of, negate: true } : c, sync));
+	const head = h("div", { class: "grp-head combine" }, "Match when", combo, "of these are true", h("span", { class: "grow" }), depth ? iconBtn("x", "Remove group", () => { el.remove(); el.onchange?.(); }, "ghost rm") : null);
+	const items = !expr ? [DEFAULT_LEAF] : expr.type || expr.op === "not" ? [expr] : expr.of;
+	items.forEach(add);
+	el.append(head, kids, h("div", { class: "grp-add" }, h("button", { type: "button", class: "small ghost", onclick: () => { condRow(kids, DEFAULT_LEAF, sync); } }, icon("plus"), "Add condition"), depth < 3 ? h("button", { type: "button", class: "small ghost", onclick: () => { addGroup({ op: "or", of: [DEFAULT_LEAF] }); sync(); } }, icon("plus"), "Add group") : null));
+	sync();
+	el.read = () => {
+		const list = [...kids.children].map((k) => { if (k.read && k.classList.contains("grp")) return k.read(); const c = k.read(); const leaf = { type: c.type, params: c.params }; return c.negate ? { op: "not", of: leaf } : leaf; }).filter(Boolean);
+		return !list.length ? null : list.length === 1 ? list[0] : { op: combo.value, of: list };
+	};
+	return el;
+}

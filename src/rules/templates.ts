@@ -1,9 +1,12 @@
 import type { CleanupAction, RuleMode } from "../types.js";
 import { parseExpression, requirements } from "./expression.js";
 
-/** Starting points for common cleanup scenarios. Picking one pre-fills the rule editor; nothing is saved until the user does. */
+/** The rule library: the main way to add rules. Each is a starting point for a common scenario. Picking one pre-fills the rule editor; nothing is saved until the user does. */
+export type TemplateGroup = "Protect" | "Clean up";
+
 export interface RuleTemplate {
 	id: string;
+	group: TemplateGroup;
 	title: string;
 	description: string;
 	mode: RuleMode;
@@ -12,125 +15,25 @@ export interface RuleTemplate {
 	serviceFilter?: Array<"sonarr" | "radarr">;
 }
 
+type Expr = Record<string, unknown>;
+const c = (type: string, params: Record<string, unknown> = {}): Expr => ({ type, params });
+
 export const RULE_TEMPLATES: RuleTemplate[] = [
-	{
-		id: "stale",
-		title: "Not watched in a year",
-		description: "Titles nobody has played in 12 months. Never-watched titles only qualify once they've been in the library that long.",
-		mode: "cleanup",
-		action: "delete",
-		expression: { op: "and", of: [{ type: "last_watched", params: { operator: "not_watched_in_days", days: 365 } }, { type: "age", params: { operator: "older_than", days: 365 } }] },
-	},
-	{
-		id: "never-watched",
-		title: "Never watched after 6 months",
-		description: "Downloaded, sat in the library for half a year, and never played once.",
-		mode: "cleanup",
-		action: "delete",
-		expression: { op: "and", of: [{ type: "watch_count", params: { operator: "equals", count: 0 } }, { type: "age", params: { operator: "older_than", days: 180 } }] },
-	},
-	{
-		id: "requester-done",
-		title: "Requester has watched it",
-		description: "The person who asked for it in Seerr has watched it, and it's been in the library for 60 days.",
-		mode: "cleanup",
-		action: "delete",
-		expression: { op: "and", of: [{ type: "seerr_requester_watched", params: { operator: "requester_watched" } }, { type: "age", params: { operator: "older_than", days: 60 } }] },
-	},
-	{
-		id: "requester-season-done",
-		title: "Requester finished the season",
-		description: "The person who requested a season in Seerr has watched every episode of it. Deletes that season's files and unmonitors it; the rest of the show stays. Seasons still airing are left alone.",
-		mode: "cleanup",
-		action: "delete_season",
-		expression: { type: "season_requester_watched", params: {} },
-		serviceFilter: ["sonarr"],
-	},
-	{
-		id: "stale-episode",
-		title: "Episode left unwatched",
-		description: "A season has an episode, sitting on disk, that nobody has watched in the 90 days since it was added — even if the rest of the season was watched recently. Deletes that season's files and unmonitors it; the rest of the show stays.",
-		mode: "cleanup",
-		action: "delete_season",
-		expression: { type: "stale_unwatched_episode", params: { days: 90 } },
-		serviceFilter: ["sonarr"],
-	},
-	{
-		id: "low-rated",
-		title: "Low rated and unwatched",
-		description: "Rated below 5/10, never played, and added more than 3 months ago.",
-		mode: "cleanup",
-		action: "delete",
-		expression: { op: "and", of: [{ type: "rating", params: { operator: "less_than", score: 5 } }, { type: "watch_count", params: { operator: "equals", count: 0 } }, { type: "age", params: { operator: "older_than", days: 90 } }] },
-	},
-	{
-		id: "ended-abandoned",
-		title: "Ended series nobody watches",
-		description: "Finished shows with no plays in the last year. Usually the biggest single source of reclaimable space.",
-		mode: "cleanup",
-		action: "delete",
-		serviceFilter: ["sonarr"],
-		expression: { op: "and", of: [{ type: "status", params: { statuses: ["ended"] } }, { type: "last_watched", params: { operator: "not_watched_in_days", days: 365 } }] },
-	},
-	{
-		id: "big-unwatched",
-		title: "Large files nobody plays",
-		description: "Anything over 40 GB that hasn't been watched in 6 months, usually remuxes and 4K copies. Deletes the files but keeps the entry.",
-		mode: "cleanup",
-		action: "delete_files",
-		expression: { op: "and", of: [{ type: "size", params: { operator: "greater_than", sizeGb: 40 } }, { type: "last_watched", params: { operator: "not_watched_in_days", days: 180 } }] },
-	},
-	{
-		id: "unmonitor-ended",
-		title: "Stop searching for ended series",
-		description: "Unmonitor finished shows so Sonarr stops looking for upgrades. Frees no space and keeps the files.",
-		mode: "cleanup",
-		action: "unmonitor",
-		serviceFilter: ["sonarr"],
-		expression: { op: "and", of: [{ type: "status", params: { statuses: ["ended"] } }, { type: "monitored", params: {} }] },
-	},
-	{
-		id: "protect-recent",
-		title: "Protect anything watched recently",
-		description: "Never touch titles someone played in the last 30 days, whatever other rules say.",
-		mode: "retention",
-		action: "delete",
-		expression: { type: "last_watched", params: { operator: "watched_within_days", days: 30 } },
-	},
-	{
-		id: "protect-requests",
-		title: "Protect fresh requests",
-		description: "Keep anything requested in Seerr during the last 90 days, watched or not.",
-		mode: "retention",
-		action: "delete",
-		expression: { type: "seerr_request_age", params: { operator: "newer_than", days: 90 } },
-	},
-	{
-		id: "protect-kids",
-		title: "Protect films for kids",
-		description: "Never touch films with a children's rating: G, PG, U, 12, 12A, FSK 6 and the equivalents in whichever country Radarr uses. Films with no rating count as unknown, so they're protected too until they have one.",
-		mode: "retention",
-		action: "delete",
-		serviceFilter: ["radarr"],
-		expression: { type: "certification", params: { operator: "suitable_for_kids" } },
-	},
-	{
-		id: "protect-kids-shows",
-		title: "Protect shows for kids",
-		description: "Never touch series with a children's rating: TV-Y, TV-Y7, TV-G, 12 or the local equivalent. Shows with no rating count as unknown, so they're protected too until they have one.",
-		mode: "retention",
-		action: "delete",
-		serviceFilter: ["sonarr"],
-		expression: { type: "certification", params: { operator: "suitable_for_kids" } },
-	},
-	{
-		id: "protect-keep-tag",
-		title: "Protect the “keep” tag",
-		description: "Anything tagged keep in Sonarr or Radarr is off limits. Tag favourites there to protect them.",
-		mode: "retention",
-		action: "delete",
-		expression: { type: "tag_match", params: { operator: "includes_any", tags: ["keep"] } },
-	},
+	// ── Clean up ───────────────────────────────────────────────────────────
+	{ id: "cleanup-unwatched-60", group: "Clean up", title: "Added and not watched for 60 days", description: "Removes anything that was added more than 60 days ago and has never been watched.", mode: "cleanup", action: "delete", expression: { op: "and", of: [c("age", { operator: "older_than", days: 60 }), c("watch_count", { operator: "equals", count: 0 })] } },
+	{ id: "cleanup-unwatched-365", group: "Clean up", title: "Last watched more than 365 days ago", description: "Removes anything whose last play was more than 365 days ago. Never-watched titles only count once they've been in the library that long. Needs Plex.", mode: "cleanup", action: "delete", expression: c("last_watched", { operator: "not_watched_in_days", days: 365 }) },
+	{ id: "cleanup-requester-watched-365", group: "Clean up", title: "Requester watched it, no one since (365 days)", description: "Removes films the person who requested them has watched, once nobody has played them for 365 days. Needs Plex and Seerr. Radarr only.", mode: "cleanup", action: "delete", serviceFilter: ["radarr"], expression: { op: "and", of: [c("seerr_requester_watched", { operator: "requester_watched" }), c("last_watched", { operator: "not_watched_in_days", days: 365 })] } },
+	{ id: "cleanup-season-requester-watched-365", group: "Clean up", title: "Requester watched the season, no views since (365 days)", description: "Removes a season's episodes once the person who requested it has watched every episode and nobody has played it for 365 days. Seasons still airing never match. Needs Plex and Seerr. Sonarr only.", mode: "cleanup", action: "delete_season", serviceFilter: ["sonarr"], expression: { op: "and", of: [c("season_requester_watched"), c("last_watched", { operator: "not_watched_in_days", days: 365 })] } },
+
+	{ id: "cleanup-ended-unmonitored", group: "Clean up", title: "Ended series with no monitored seasons", description: "Removes series that have ended and have no monitored seasons, so nothing more will be downloaded. Sonarr only.", mode: "cleanup", action: "delete", serviceFilter: ["sonarr"], expression: { op: "and", of: [c("status", { statuses: ["ended"] }), c("no_monitored_seasons")] } },
+
+	// ── Protect ────────────────────────────────────────────────────────────
+	{ id: "protect-kids", group: "Protect", title: "Protect kids content", description: "Keeps films and shows rated suitable for kids, up to the age set under Settings, with ratings from any country matched by minimum age. Unrated titles aren't protected.", mode: "retention", action: "delete", expression: c("certification", { operator: "suitable_for_kids" }) },
+	{ id: "protect-recent", group: "Protect", title: "Protect anything watched recently", description: "Keeps anything played in the last 30 days, whatever other rules say.", mode: "retention", action: "delete", expression: c("last_watched", { operator: "watched_within_days", days: 30 }) },
+	{ id: "protect-new", group: "Protect", title: "Protect new additions", description: "Keeps anything added to the library in the last 60 days, so new arrivals get time to be watched.", mode: "retention", action: "delete", expression: c("age", { operator: "newer_than", days: 60 }) },
+	{ id: "protect-requests", group: "Protect", title: "Protect fresh requests", description: "Keeps anything requested in Seerr in the last 90 days, watched or not. Needs Seerr; if it can't be reached, titles are kept.", mode: "retention", action: "delete", expression: c("seerr_request_age", { operator: "newer_than", days: 90 }) },
+	{ id: "protect-keep-tag", group: "Protect", title: "Protect the “keep” tag", description: "Keeps anything tagged “keep” in Sonarr or Radarr. Tag your favourites there to protect them.", mode: "retention", action: "delete", expression: c("tag_match", { operator: "includes_any", tags: ["keep"] }) },
+	{ id: "protect-airing", group: "Protect", title: "Protect shows still airing", description: "Keeps series that are still airing, since new episodes and seasons may be coming. Sonarr only.", mode: "retention", action: "delete", serviceFilter: ["sonarr"], expression: c("status", { statuses: ["continuing"] }) },
 ];
 
 /** Templates plus what each one needs connected, so the UI can say "Needs Plex" before the user picks it. */

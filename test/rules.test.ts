@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { evaluateExpression, parseExpression, ExpressionError, requirements } from "../src/rules/expression.js";
+import { evaluateExpression, matchedReasons, parseExpression, ExpressionError, requirements } from "../src/rules/expression.js";
 import { normalizeItem } from "../src/arr/normalize.js";
 import { passesFilters } from "../src/rules/filters.js";
 import { safeRegex } from "../src/rules/regex.js";
@@ -59,6 +59,7 @@ describe("three-valued logic", () => {
 	it("explains matches in the reason", () => {
 		const r = ev({ op: "and", of: [{ type: "age", params: { operator: "older_than", days: 100 } }, { type: "size", params: { operator: "greater_than", sizeGb: 1 } }] });
 		expect(r.reason).toContain("AND");
+		expect(matchedReasons(r).map((m) => m.type)).toEqual(["age", "size"]);
 	});
 });
 
@@ -104,7 +105,7 @@ describe("expression validation", () => {
 });
 
 describe("filters", () => {
-	const base: RuleRecord = { id: "r", name: "r", enabled: true, priority: 0, mode: "cleanup", action: "delete", expression: {}, serviceFilter: null, instanceFilter: null, excludeTags: null, excludeTitles: null };
+	const base: RuleRecord = { id: "r", name: "r", enabled: true, priority: 0, mode: "cleanup", action: "delete", expression: {}, serviceFilter: null, instanceFilter: null, excludeTags: null, excludeTitles: null, serviceLocked: false };
 	it("excludes by tag label, title pattern, service and instance", () => {
 		const tagged = item({ tags: [1] });
 		expect(passesFilters(tagged, { ...base, excludeTags: ["KEEP"] }).ok).toBe(false);
@@ -202,7 +203,7 @@ describe("content rating", () => {
 		expect(ev(kids, item({ certification: undefined })).state).toBe("false");
 	});
 	it("kids shows template: TV-Y7 protects, TV-PG and TV-MA do not", () => {
-		const shows = RULE_TEMPLATES.find((x) => x.id === "protect-kids-shows")!.expression;
+		const shows = RULE_TEMPLATES.find((x) => x.id === "protect-kids")!.expression;
 		const show = (over = {}) => normalizeItem(series(1, over), { instanceId: "i", service: "sonarr", ...maps });
 		expect(ev(shows, show({ certification: "TV-Y7", genres: ["Animation"] })).state).toBe("true");
 		expect(ev(shows, show({ certification: "TV-PG", genres: ["Children"] })).state).toBe("false");
@@ -217,8 +218,8 @@ describe("rule templates", () => {
 	it("has unique ids and says what each one needs", () => {
 		expect(new Set(RULE_TEMPLATES.map((t) => t.id)).size).toBe(RULE_TEMPLATES.length);
 		const byId = Object.fromEntries(describeTemplates().map((t) => [t.id, t.needs]));
-		expect(byId.stale).toMatchObject({ watch: true, seerr: false });
-		expect(byId["requester-done"]).toMatchObject({ watch: true, seerr: true });
+		expect(byId["protect-recent"]).toMatchObject({ watch: true, seerr: false });
+		expect(byId["protect-requests"]).toMatchObject({ seerr: true });
 		expect(byId["protect-keep-tag"]).toMatchObject({ watch: false, seerr: false });
 	});
 });
@@ -230,5 +231,17 @@ describe("schedule", () => {
 		expect(nextRun(new Date(2026, 0, 31, 9), s(1, "months")).getTime()).toBe(new Date(2026, 1, 28, 4, 30).getTime());
 		expect(nextRun(new Date(2026, 0, 1, 9), s(2, "weeks")).getTime()).toBe(new Date(2026, 0, 15, 4, 30).getTime());
 		expect(nextRun(new Date(2026, 0, 1, 9), s(3, "days")).getTime()).toBe(new Date(2026, 0, 4, 4, 30).getTime());
+	});
+});
+
+describe("ended series with no monitored seasons template", () => {
+	const expr = RULE_TEMPLATES.find((x) => x.id === "cleanup-ended-unmonitored")!.expression;
+	const show = (over = {}) => normalizeItem(series(1, over), { instanceId: "i", service: "sonarr", ...maps });
+	const seasons = (...m: boolean[]) => ({ seasons: m.map((monitored, n) => ({ seasonNumber: n, monitored })) });
+	it("matches only ended series whose real seasons are all unmonitored", () => {
+		expect(ev(expr, show(seasons(true, false, false))).state).toBe("true"); // season 0 (specials) ignored
+		expect(ev(expr, show(seasons(false, false, true))).state).toBe("false");
+		expect(ev(expr, show({ ...seasons(false, false), status: "continuing" })).state).toBe("false");
+		expect(ev(expr).state).toBe("false"); // movie
 	});
 });

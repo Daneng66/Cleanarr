@@ -101,14 +101,16 @@ const defs: RuleTypeDef[] = [
 		type: "age",
 		label: "Age in library",
 		group: "Library",
-		description: "How long ago the item was added to Sonarr/Radarr.",
+		description: "How long ago the film or season was added to the library (Plex's date when available). Quality upgrades don't reset it. Items with nothing downloaded never match.",
+		needs: "files",
 		fields: [
 			{ name: "operator", label: "Operator", kind: "select", options: ["older_than", "newer_than"] },
 			{ name: "days", label: "Days", kind: "number" },
 		],
 		schema: z.object({ operator: z.enum(["older_than", "newer_than"]), days: z.number().int().min(1) }),
 		evaluate(item, p, ctx) {
-			const label = `Added ${p.operator === "older_than" ? "more" : "less"} than ${p.days} days ago`;
+			const label = `Added to library ${p.operator === "older_than" ? "more" : "less"} than ${p.days} days ago`;
+			if (!item.hasFile) return check(false, `${label} (nothing downloaded yet)`);
 			if (!item.added) return U(`${label} (no added date)`);
 			const age = daysAgo(item.added, ctx.now);
 			return check(p.operator === "older_than" ? age > p.days : age < p.days, `${label} (${age} days)`);
@@ -174,6 +176,15 @@ const defs: RuleTypeDef[] = [
 		fields: [],
 		schema: z.object({}),
 		evaluate: (item) => check(item.monitored, "Item is monitored"),
+	},
+	{
+		type: "no_monitored_seasons",
+		label: "No monitored seasons",
+		group: "Library",
+		description: "Series where none of the seasons are monitored (specials ignored), so nothing new will be downloaded.",
+		fields: [],
+		schema: z.object({}),
+		evaluate: (item) => (item.kind !== "series" || item.monitoredSeasons === undefined ? F("Only applies to series") : check(item.monitoredSeasons === 0, item.monitoredSeasons === 0 ? "No seasons are monitored" : `${item.monitoredSeasons} season(s) monitored`)),
 	},
 	{
 		type: "unmonitored",
@@ -454,6 +465,7 @@ const defs: RuleTypeDef[] = [
 				return check(w.lastWatchedAt !== null && daysAgo(w.lastWatchedAt, ctx.now) < p.days, `Watched within ${p.days} days`);
 			}
 			const label = `Not watched in ${p.days} days`;
+			if (!item.hasFile) return check(false, `${label} (nothing downloaded yet)`);
 			if (w.lastWatchedAt) {
 				const d = daysAgo(w.lastWatchedAt, ctx.now);
 				return check(d > p.days, `${label} (last watched ${d} days ago)`);

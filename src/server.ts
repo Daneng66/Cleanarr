@@ -104,7 +104,9 @@ export function buildApp(deps: AppDeps): FastifyInstance {
 		});
 		api.put<{ Params: { id: string } }>("/rules/reorder", async (req) => (store.rules.reorder(S.ruleReorder.parse(req.body).ids), store.rules.list()));
 		api.put<{ Params: { id: string } }>("/rules/:id", async (req, reply) => {
-			const body = S.ruleUpdate.parse(req.body);
+			const sent = (req.body ?? {}) as Record<string, unknown>;
+			// zod 4 applies defaults inside .partial(), so keep only the fields actually sent (else an edit resets priority, enabled, filters)
+			const body = Object.fromEntries(Object.entries(S.ruleUpdate.parse(sent)).filter(([k]) => k in sent)) as ReturnType<typeof S.ruleUpdate.parse>;
 			const patch = { ...body, ...(body.expression !== undefined ? { expression: parseExpression(body.expression) } : {}) };
 			const updated = store.rules.update(req.params.id, patch as never);
 			return updated ?? reply.code(404).send({ error: "Not found" });

@@ -45,6 +45,10 @@ export function normalizeFile(raw: RawFile): FileInfo {
 	};
 }
 
+/** Earliest import date among files. An upgrade replaces the file with a later one, so this can run late; Plex's add date overrides it when available. */
+const firstOf = (...ds: Array<Date | null | undefined>): Date | null => ds.reduce<Date | null>((m, d) => (d && (!m || d < m) ? d : m), null);
+const downloadedAt = (files: FileInfo[] | null): Date | null => firstOf(...(files ?? []).map((f) => f.dateAdded));
+
 export function normalizeItem(
 	raw: RawItem,
 	ctx: {
@@ -67,6 +71,8 @@ export function normalizeItem(
 		: ctx.episodeFiles
 			? ctx.episodeFiles.map(normalizeFile)
 			: null;
+	const withFiles = isMovie || !Array.isArray(raw.seasons) ? [] : raw.seasons.filter((s: RawItem) => (num(s.statistics?.episodeFileCount) ?? 0) > 0);
+	const onlySeason = withFiles.length === 1 ? num(withFiles[0].seasonNumber) : null;
 	const profileId = num(raw.qualityProfileId);
 	const fileCount = isMovie ? (raw.hasFile || raw.movieFile ? 1 : 0) : (num(stats.episodeFileCount) ?? 0);
 	return {
@@ -85,7 +91,7 @@ export function normalizeItem(
 		qualityProfileId: profileId,
 		qualityProfileName: profileId !== null ? (ctx.profiles.get(profileId) ?? null) : null,
 		sizeOnDisk: num(isMovie ? raw.sizeOnDisk : stats.sizeOnDisk) ?? 0,
-		added: date(raw.added),
+		added: downloadedAt(files) ?? date(raw.added), // ponytail: Sonarr falls back to the monitored date unless episode files were loaded (rules with needs: "files"); Plex's date overrides both
 		genres: Array.isArray(raw.genres) ? raw.genres.map(String) : [],
 		certification: str(raw.certification),
 		tags: Array.isArray(raw.tags)
@@ -102,6 +108,8 @@ export function normalizeItem(
 		files,
 		fileCount,
 		poster: posterOf(raw.images),
+		...(onlySeason !== null ? { onlySeason } : {}),
+		...(!isMovie && Array.isArray(raw.seasons) ? { monitoredSeasons: raw.seasons.filter((s: RawItem) => s.monitored === true && num(s.seasonNumber) !== 0).length } : {}),
 	};
 }
 
@@ -117,6 +125,7 @@ export function seasonItems(series: LibraryItem, raw: RawItem, episodes: RawItem
 		const n = num(s.seasonNumber);
 		const fileCount = num(s.statistics?.episodeFileCount) ?? 0;
 		if (n === null || fileCount === 0) continue;
+		const seasonFiles = episodeFiles ? episodeFiles.filter((f) => f.seasonNumber === n).map(normalizeFile) : null;
 		out.push({
 			...series,
 			kind: "season",
@@ -125,7 +134,8 @@ export function seasonItems(series: LibraryItem, raw: RawItem, episodes: RawItem
 			sizeOnDisk: num(s.statistics?.sizeOnDisk) ?? 0,
 			fileCount,
 			poster: posterOf(s.images) ?? series.poster,
-			files: episodeFiles ? episodeFiles.filter((f) => f.seasonNumber === n).map(normalizeFile) : null,
+			files: seasonFiles,
+			added: downloadedAt(seasonFiles) ?? series.added,
 			season: {
 				number: n,
 				episodes: episodes
