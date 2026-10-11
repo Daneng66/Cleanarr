@@ -143,7 +143,7 @@ npm run build
 CLEANARR_API_KEY=change-me npm start
 ```
 
-**Unraid**: install from Community Apps (search "Cleanarr"), or add the template manually from
+**Unraid**: add the template manually from
 `https://raw.githubusercontent.com/Daneng66/Cleanarr/main/unraid/cleanarr.xml`. The image is `ghcr.io/daneng66/cleanarr`.
 
 Then:
