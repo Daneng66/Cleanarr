@@ -32,6 +32,11 @@ export const ICONS = {
 	plug: [["path", { d: "M5.8 1.8v3M10.2 1.8v3M3.8 4.8h8.4v2.4a4.2 4.2 0 0 1-8.4 0zM8 11.4v2.8" }]],
 	why: [["circle", { cx: 8, cy: 8, r: 6 }], ["path", { d: "M6.2 6.3a1.8 1.8 0 1 1 2.5 1.7c-.5.2-.7.6-.7 1.1v.3M8 11.2v.1" }]],
 	code: [["path", { d: "M5.5 4.5L2 8l3.5 3.5M10.5 4.5L14 8l-3.5 3.5" }]],
+	dashboard: [["path", { d: "M2.5 2.5h4.5V7H2.5zM9 2.5h4.5V7H9zM2.5 9H7v4.5H2.5zM9 9h4.5v4.5H9z" }]],
+	library: [["path", { d: "M3 2.5v11M6.5 2.5v11M10.2 3.3l3 .8-2.4 9.4-3-.8z" }]],
+	rules: [["path", { d: "M2.5 4h11M4.5 8h7M6.5 12h3" }]],
+	history: [["circle", { cx: 8, cy: 8, r: 6 }], ["path", { d: "M8 4.6V8l2.2 1.4" }]],
+	settings: [["path", { d: "M2.5 5h11M2.5 11h11" }], ["circle", { cx: 5.5, cy: 5, r: 1.8, fill: "var(--frame)" }], ["circle", { cx: 10.5, cy: 11, r: 1.8, fill: "var(--frame)" }]],
 	arrow: [["path", { d: "M3 8h10M9 4l4 4-4 4" }]],
 	// Simplified platform marks (filled): Plex chevron, Radarr target, Sonarr wave.
 	plex: [["path", { d: "M4.5 1.5h3.6L12.5 8l-4.4 6.5H4.5L8.9 8z", ...FILL }]],

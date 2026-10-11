@@ -99,7 +99,7 @@ function Library({ types, requesters }: { types: RuleTypeDef[]; requesters: stri
 			<Notices items={warnings} />
 			{error ? null : loaded ? (
 				<Readout n={total} title="on disk in your library" text={<>
-					{plural(visible.length, "title")} · {plural(visible.filter((d) => d.itemType === "movie").length, "movie")} · {plural(visible.filter((d) => d.itemType === "series").length, "series")}
+					{plural(visible.length, "title")} · {plural(visible.filter((d) => d.itemType === "movie").length, "movie")} · {plural(visible.filter((d) => d.itemType === "series").length, "series", "series")}
 					{prot ? ` · ${prot} protected` : null}{noFile ? ` · ${noFile} with no file` : null}
 				</>} />
 			) : <ReadoutSkeleton />}

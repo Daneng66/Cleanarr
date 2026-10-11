@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { ROUTES, type Route } from "../hooks/useHashRoute";
+import { Icon, type IconName } from "../components/ui/Icon";
 import { useApi } from "../providers/ApiProvider";
 import { useShell } from "../providers/ShellProvider";
 import type { Status } from "../types";
@@ -24,8 +25,9 @@ function Nav() {
 	return (
 		<nav id="nav" aria-label="Main">
 			{ROUTES.filter((r) => ROUTE_DEFS[r].nav).map((r: Route) => (
-				<a key={r} href={`#/${r}`} className={r === route || (r === "dashboard" && SUB_PAGES.includes(route)) ? "active" : ""} aria-current={r === route ? "page" : undefined}>
-					{ROUTE_DEFS[r].title}
+				<a key={r} href={`#/${r}`} className={r === route || (r === "dashboard" && SUB_PAGES.includes(route)) ? "active" : ""} aria-current={r === route ? "page" : undefined} title={ROUTE_DEFS[r].title}>
+					<span className="nav-ico"><Icon name={r === "instances" ? "plug" : (r as IconName)} /></span>
+					<span className="nav-txt">{ROUTE_DEFS[r].title}</span>
 					{r === "dashboard" && waiting ? <span className="count" aria-label={`${waiting} on the dashboard`}>{waiting}</span> : null}
 				</a>
 			))}

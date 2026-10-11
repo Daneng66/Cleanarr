@@ -1,3 +1,4 @@
+import { Fragment, useState } from "react";
 import { AsyncView } from "../../components/ui/AsyncView";
 import { Button } from "../../components/ui/Button";
 import { DialogFrame } from "../../components/ui/DialogFrame";
@@ -68,26 +69,44 @@ function RunsTable({ runs }: { runs: RunLog[] }) {
 }
 
 const AUDIT_STATE: Record<string, string> = { success: "success", blocked: "blocked", failed: "failed" };
+const AUDIT_PAGE = 25;
+/** "Today", "Yesterday", or a short date: groups the trail so a glance finds the day. */
+function dayLabel(iso: string) {
+	const d = new Date(iso), n = new Date();
+	const diff = Math.round((new Date(n.getFullYear(), n.getMonth(), n.getDate()).getTime() - new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()) / 86400000);
+	return diff === 0 ? "Today" : diff === 1 ? "Yesterday" : d.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
+}
 function AuditTable({ audit }: { audit: AuditEntry[] }) {
+	const [shown, setShown] = useState(AUDIT_PAGE);
 	return (
 		<section>
 			<SectionTitle title="Audit trail" grow={false} />
 			{audit.length ? (
 				<div className="panel table-wrap">
-					<table>
+					<table className="audit">
 						<thead><tr><th>When</th><th>Event</th><th>Item</th><th>Actor</th><th>Detail</th></tr></thead>
 						<tbody>
-							{audit.map((e, i) => (
-								<tr key={i}>
-									<td className="small"><TimeEl value={e.created_at} /></td>
-									<td><StateBadge state={AUDIT_STATE[e.outcome] || "loaded"} label={e.event_type.replaceAll("_", " ")} /></td>
-									<td>{e.title}<div className="sub">{`${e.rule_name || "—"} · ${e.action}`}</div></td>
-									<td className="small">{`${e.actor} (${e.trigger})`}</td>
-									<td className={`small${e.outcome === "failed" ? " bad" : ""}`}>{e.reason}</td>
-								</tr>
-							))}
+							{audit.slice(0, shown).map((e, i, all) => {
+								const day = dayLabel(e.created_at);
+								const first = i === 0 || day !== dayLabel(all[i - 1]!.created_at);
+								return (
+									<Fragment key={i}>
+										{first ? <tr className="day"><th colSpan={5} scope="colgroup">{day}</th></tr> : null}
+										<tr className={`ev ${e.outcome}`}>
+											<td className="small"><TimeEl value={e.created_at} /></td>
+											<td className="event"><StateBadge state={AUDIT_STATE[e.outcome] || "loaded"} label={e.event_type.replaceAll("_", " ")} /> <ActionTag action={e.action} /></td>
+											<td>{e.title}<div className="sub">{e.rule_name || "—"}</div></td>
+											<td className="small">{`${e.actor} (${e.trigger})`}</td>
+											<td className={`reason small${e.outcome === "failed" ? " bad" : ""}`}>{e.reason}</td>
+										</tr>
+									</Fragment>
+								);
+							})}
 						</tbody>
 					</table>
+					{shown < audit.length ? (
+						<div className="audit-more"><Button onClick={() => setShown((n) => n + AUDIT_PAGE)}>{`Show more (${audit.length - shown} left)`}</Button></div>
+					) : null}
 				</div>
 			) : <div className="panel"><Empty title="No activity yet" text="Every rule match, approval, block, failure and removal from your media library is recorded here." /></div>}
 		</section>
