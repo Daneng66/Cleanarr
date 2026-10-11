@@ -1,0 +1,6 @@
+<?xml version="1.0"?>
+<CommunityApplications>
+  <Profile>Cleanarr: smart media library cleanup and storage optimization for the *Arr ecosystem. Safe by default with dry-run, an approval queue and a full audit trail.</Profile>
+  <Icon>https://raw.githubusercontent.com/Daneng66/Cleanarr/main/unraid/icon.png</Icon>
+  <WebPage>https://github.com/Daneng66/Cleanarr</WebPage>
+</CommunityApplications>
