@@ -741,7 +741,7 @@ export function createEngine(deps: EngineDeps) {
 	/** Every movie and series, optionally narrowed by a rule-style filter (expression + scope). Only a definite "true" matches. */
 	async function library(filter: { expression?: unknown; serviceFilter?: Array<"sonarr" | "radarr"> | null; instanceFilter?: string[] | null; excludeTags?: string[] | null; excludeTitles?: string[] | null }) {
 		const expr = filter.expression ? parseExpression(filter.expression) : null;
-		const snap = await loadSnapshot({ ...(expr ? requirements(expr) : { files: false, watch: false, seerr: false }), seasons: false });
+		const snap = await loadSnapshot({ ...(expr ? { ...requirements(expr), watch: true } : { files: false, watch: true, seerr: false }), seasons: false });
 		const scope = { serviceFilter: filter.serviceFilter ?? null, instanceFilter: filter.instanceFilter ?? null, excludeTags: filter.excludeTags ?? null, excludeTitles: filter.excludeTitles ?? null } as RuleRecord;
 		const prot = new Map(store.protected.list().filter((p) => !p.ignoreRetention).map((p) => [`${p.instanceId}:${p.itemType}:${p.arrItemId}`, p.id]));
 		const items = snap.items.filter((i) => !snap.failedInstances.has(i.instanceId) && passesFilters(i, scope).ok && (!expr || evaluateExpression(expr, i, snap.ctx).state === "true"));
@@ -752,6 +752,7 @@ export function createEngine(deps: EngineDeps) {
 				instanceId: i.instanceId, service: i.service, arrItemId: i.arrId, itemType: i.kind as "movie" | "series", title: i.title, year: i.year, poster: i.poster,
 				sizeOnDisk: i.sizeOnDisk, monitored: i.monitored, hasFile: i.hasFile, status: i.status, added: i.added ? i.added.toISOString() : null, certification: i.certification,
 				genres: i.genres, tags: i.tags, qualityProfile: i.qualityProfileName, rating: i.rating, runtime: i.runtime, path: i.path, fileCount: i.fileCount,
+				lastWatchedAt: snap.ctx.watch?.(i)?.lastWatchedAt?.toISOString() ?? null,
 				protectedId: prot.get(`${i.instanceId}:${i.kind}:${i.arrId}`) ?? null,
 			})),
 		};

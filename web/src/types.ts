@@ -205,6 +205,7 @@ export interface LibraryRow extends ItemRef {
 	rating: number | null;
 	path: string | null;
 	fileCount: number;
+	lastWatchedAt: string | null;
 	protectedId: string | null;
 }
 
