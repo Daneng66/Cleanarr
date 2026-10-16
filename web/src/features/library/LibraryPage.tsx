@@ -131,7 +131,7 @@ function Library({ types, requesters }: { types: RuleTypeDef[]; requesters: stri
 						</label>
 						<div className="posters">
 							<div className="grid" role="list" aria-label="Library titles">
-								{visible.slice(0, shown).map((d) => <LibraryCard key={libKey(d)} d={d} checked={selected.has(libKey(d))} onCheck={(on) => toggle(d, on)} onOpen={() => open(d)} />)}
+								{visible.slice(0, shown).map((d) => <LibraryCard key={libKey(d)} d={d} showDays={sort === "lastWatched"} checked={selected.has(libKey(d))} onCheck={(on) => toggle(d, on)} onOpen={() => open(d)} />)}
 							</div>
 							{shown < visible.length ? <div ref={more} className="more" aria-hidden="true" /> : null}
 						</div>
@@ -141,13 +141,16 @@ function Library({ types, requesters }: { types: RuleTypeDef[]; requesters: stri
 	);
 }
 
-function LibraryCard({ d, checked, onCheck, onOpen }: { d: LibraryRow; checked: boolean; onCheck: (on: boolean) => void; onOpen: () => void }) {
+const daysLabel = (iso: string | null) => (iso ? `${Math.max(0, Math.floor((Date.now() - Date.parse(iso)) / 86_400_000))}d` : "Never");
+
+function LibraryCard({ d, showDays, checked, onCheck, onOpen }: { d: LibraryRow; showDays: boolean; checked: boolean; onCheck: (on: boolean) => void; onOpen: () => void }) {
 	return (
 		<div role="listitem" className="lib-poster">
 			<button type="button" className={`poster ${hasFiles(d) ? "" : "keep"}`} aria-label={`${d.title}, ${bytes(d.sizeOnDisk)}`} onClick={onOpen}>
 				<span className="art">
 					<Art src={d.poster} title={d.title} fallbackClass="noart" lazy />
 					{d.protectedId ? <span className="badge">Protected</span> : null}
+					{showDays ? <span className="days">{daysLabel(d.lastWatchedAt)}</span> : null}
 					<span className="size">{d.sizeOnDisk ? bytes(d.sizeOnDisk) : "No file"}</span>
 				</span>
 				<span className="cap"><span className="t">{d.title}</span><span className="m">{[d.year, kindLabel(d.itemType), d.monitored ? null : "Unmonitored"].filter(Boolean).join(" · ")}</span></span>
