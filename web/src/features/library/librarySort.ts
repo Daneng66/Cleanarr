@@ -10,6 +10,8 @@ export const SORTS = {
 	year: ["Year", (a: LibraryRow, b: LibraryRow) => (b.year || 0) - (a.year || 0)],
 	rating: ["Rating", (a: LibraryRow, b: LibraryRow) => (b.rating || 0) - (a.rating || 0)],
 	lastWatched: ["Last watched (days)", (a: LibraryRow, b: LibraryRow) => lastWatchedMs(a) - lastWatchedMs(b)],
+	watchesAsc: ["Watch count (low to high)", (a: LibraryRow, b: LibraryRow) => a.watchCount - b.watchCount],
+	watchesDesc: ["Watch count (high to low)", (a: LibraryRow, b: LibraryRow) => b.watchCount - a.watchCount],
 } as const;
 export type SortKey = keyof typeof SORTS;
 

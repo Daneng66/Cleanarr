@@ -753,6 +753,7 @@ export function createEngine(deps: EngineDeps) {
 				sizeOnDisk: i.sizeOnDisk, monitored: i.monitored, hasFile: i.hasFile, status: i.status, added: i.added ? i.added.toISOString() : null, certification: i.certification,
 				genres: i.genres, tags: i.tags, qualityProfile: i.qualityProfileName, rating: i.rating, runtime: i.runtime, path: i.path, fileCount: i.fileCount,
 				lastWatchedAt: snap.ctx.watch?.(i)?.lastWatchedAt?.toISOString() ?? null,
+				watchCount: snap.ctx.watch?.(i)?.watchCount ?? 0,
 				protectedId: prot.get(`${i.instanceId}:${i.kind}:${i.arrId}`) ?? null,
 			})),
 		};
