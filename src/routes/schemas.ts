@@ -99,6 +99,7 @@ export const libraryQuery = z.object({
 	instanceFilter: z.array(z.string()).nullish(),
 	excludeTags: z.array(z.string().min(1)).nullish(),
 	excludeTitles: patterns.nullish(),
+	protection: z.enum(["any", "protected", "unprotected"]).optional(),
 });
 export const libraryRemove = z.object({
 	action: z.enum(["delete", "delete_files", "unmonitor"]),

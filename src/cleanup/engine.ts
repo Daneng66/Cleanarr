@@ -739,12 +739,33 @@ export function createEngine(deps: EngineDeps) {
 
 	// ── Library browser ───────────────────────────────────────────────────
 	/** Every movie and series, optionally narrowed by a rule-style filter (expression + scope). Only a definite "true" matches. */
-	async function library(filter: { expression?: unknown; serviceFilter?: Array<"sonarr" | "radarr"> | null; instanceFilter?: string[] | null; excludeTags?: string[] | null; excludeTitles?: string[] | null }) {
+	async function library(filter: { expression?: unknown; serviceFilter?: Array<"sonarr" | "radarr"> | null; instanceFilter?: string[] | null; excludeTags?: string[] | null; excludeTitles?: string[] | null; protection?: "any" | "protected" | "unprotected" }) {
 		const expr = filter.expression ? parseExpression(filter.expression) : null;
-		const snap = await loadSnapshot({ ...(expr ? { ...requirements(expr), watch: true } : { files: false, watch: true, seerr: false }), seasons: false });
+		// Protection takes priority over the filter, so retention rules are evaluated too and their evidence loaded.
+		const retention = activeRules().rules.filter((r) => r.rule.mode === "retention");
+		const base = expr ? { ...requirements(expr), watch: true } : { files: false, watch: true, seerr: false };
+		const needs = { ...base, seasons: false };
+		for (const { expr: e } of retention) { const q = requirements(e); needs.files ||= q.files; needs.seerr ||= q.seerr; }
+		const snap = await loadSnapshot(needs);
 		const scope = { serviceFilter: filter.serviceFilter ?? null, instanceFilter: filter.instanceFilter ?? null, excludeTags: filter.excludeTags ?? null, excludeTitles: filter.excludeTitles ?? null } as RuleRecord;
 		const prot = new Map(store.protected.list().filter((p) => !p.ignoreRetention).map((p) => [`${p.instanceId}:${p.itemType}:${p.arrItemId}`, p.id]));
-		const items = snap.items.filter((i) => !snap.failedInstances.has(i.instanceId) && passesFilters(i, scope).ok && (!expr || evaluateExpression(expr, i, snap.ctx).state === "true"));
+		const overrideKeys = store.protected.targetKeys(true);
+		/** Why a title is protected from cleanup (manual, or a retention rule that matches or can't be evaluated); null = unprotected. */
+		const protectedBy = (i: LibraryItem): string | null => {
+			if (prot.has(`${i.instanceId}:${i.kind}:${i.arrId}`)) return "Manually protected";
+			if (covers(overrideKeys, i)) return null;
+			for (const { rule, expr: e } of retention) {
+				if (actionFor(rule, i) === null || !passesFilters(i, rule).ok) continue;
+				const r = evaluateExpression(e, i, snap.ctx);
+				if (r.state !== "false") return `Retention rule "${rule.name}"`;
+			}
+			return null;
+		};
+		const matches = (i: LibraryItem) => passesFilters(i, scope).ok && (!expr || evaluateExpression(expr, i, snap.ctx).state === "true");
+		const mode = filter.protection ?? "any";
+		const guarded = new Map<LibraryItem, string | null>(snap.items.map((i) => [i, protectedBy(i)]));
+		// Protection outranks every other condition: "protected" lists all protected titles, "unprotected" drops them before the conditions apply.
+		const items = snap.items.filter((i) => !snap.failedInstances.has(i.instanceId) && (mode === "protected" ? guarded.get(i) !== null : mode === "unprotected" ? guarded.get(i) === null && matches(i) : matches(i)));
 		return {
 			warnings: snap.warnings,
 			total: snap.items.length,
@@ -755,6 +776,7 @@ export function createEngine(deps: EngineDeps) {
 				lastWatchedAt: snap.ctx.watch?.(i)?.lastWatchedAt?.toISOString() ?? null,
 				watchCount: snap.ctx.watch?.(i)?.watchCount ?? 0,
 				protectedId: prot.get(`${i.instanceId}:${i.kind}:${i.arrId}`) ?? null,
+				protectedBy: guarded.get(i) ?? null,
 			})),
 		};
 	}

@@ -177,6 +177,14 @@ describe("library", () => {
 		expect(filtered.items[0].protectedId).toBeTruthy();
 		expect((await a.inject({ method: "POST", url: "/api/library", payload: { expression: { type: "nope", params: {} } } })).statusCode).toBe(400);
 	});
+	it("protection filter outranks the other conditions", async () => {
+		const { s, app: a } = app(null, { radarr: [movie(1), movie(2, { sizeOnDisk: 1 * GB })] });
+		const all = (await a.inject({ method: "POST", url: "/api/library", payload: {} })).json();
+		s.store.protected.create({ instanceId: all.items[0].instanceId, arrItemId: all.items[0].arrItemId, itemType: "movie", seasonNumber: null, title: "x" });
+		const titles = async (payload: object) => ((await a.inject({ method: "POST", url: "/api/library", payload })).json().items as Array<{ title: string }>).map((i) => i.title);
+		expect(await titles({ expression: old(10), protection: "unprotected" })).not.toContain("Movie 1");
+		expect(await titles({ protection: "protected", expression: old(10), excludeTitles: ["Movie 1"] })).toEqual(["Movie 1"]);
+	});
 	it("bulk remove skips manually protected titles", async () => {
 		const { s, app: a } = app(null, { radarr: [movie(1), movie(2)] });
 		const items = (await a.inject({ method: "POST", url: "/api/library", payload: {} })).json().items as Array<{ instanceId: string; arrItemId: number }>;

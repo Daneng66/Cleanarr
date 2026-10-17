@@ -208,6 +208,8 @@ export interface LibraryRow extends ItemRef {
 	lastWatchedAt: string | null;
 	watchCount: number;
 	protectedId: string | null;
+	/** Why the title is protected from cleanup (manual or a retention rule); null when unprotected. */
+	protectedBy: string | null;
 }
 
 export interface RemoveResult {

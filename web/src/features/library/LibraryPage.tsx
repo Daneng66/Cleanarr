@@ -49,15 +49,14 @@ function Library({ types, requesters }: { types: RuleTypeDef[]; requesters: stri
 	const [search, setSearch] = useState("");
 	const [sort, setSort] = useState<SortKey>("title");
 	const [svc, setSvc] = useState<Svc>("all");
-	const [protection, setProtection] = useState<FilterState["protection"]>("any");
 
 	const load = useCallback(async () => {
 		setLoading(true);
 		try {
 			const r = await api.post<{ items: LibraryRow[]; warnings: string[] }>("/library", {
-				expression: filterExpression(filter, types), excludeTags: splitList(filter.tags), excludeTitles: splitList(filter.titleRx),
+				expression: filterExpression(filter, types), excludeTags: splitList(filter.tags), excludeTitles: splitList(filter.titleRx), protection: filter.protection,
 			});
-			setRows(r.items); setProtection(filter.protection); setSelected(new Set()); setShown(PAGE); setWarnings(r.warnings); setError(null); setLoaded(true);
+			setRows(r.items); setSelected(new Set()); setShown(PAGE); setWarnings(r.warnings); setError(null); setLoaded(true);
 		} catch (e) {
 			setError((e as Error).message.split("\n").map(friendlyIssue(types)).join(" · "));
 		} finally { setLoading(false); }
@@ -75,8 +74,8 @@ function Library({ types, requesters }: { types: RuleTypeDef[]; requesters: stri
 
 	const visible = useMemo(() => {
 		const q = search.trim().toLowerCase();
-		return rows.filter((d) => (svc === "all" || d.service === svc) && (protection === "any" || !!d.protectedId === (protection === "protected")) && (!q || d.title.toLowerCase().includes(q))).sort(SORTS[sort][1]);
-	}, [rows, search, svc, sort, protection]);
+		return rows.filter((d) => (svc === "all" || d.service === svc) && (!q || d.title.toLowerCase().includes(q))).sort(SORTS[sort][1]);
+	}, [rows, search, svc, sort]);
 
 	const more = useRef<HTMLDivElement>(null);
 	useEffect(() => {
@@ -92,7 +91,7 @@ function Library({ types, requesters }: { types: RuleTypeDef[]; requesters: stri
 	const pickedRows = rows.filter((d) => selected.has(libKey(d)));
 	const toggle = (d: LibraryRow, on: boolean) => setSelected((s) => { const n = new Set(s); on ? n.add(libKey(d)) : n.delete(libKey(d)); return n; });
 	const total = visible.reduce((n, d) => n + d.sizeOnDisk, 0);
-	const prot = visible.filter((d) => d.protectedId).length, noFile = visible.filter((d) => !hasFiles(d)).length;
+	const prot = visible.filter((d) => d.protectedBy).length, noFile = visible.filter((d) => !hasFiles(d)).length;
 	const allPicked = visible.length > 0 && visible.every((d) => selected.has(libKey(d)));
 
 	return (
@@ -150,7 +149,7 @@ function LibraryCard({ d, showDays, showWatches, checked, onCheck, onOpen }: { d
 			<button type="button" className={`poster ${hasFiles(d) ? "" : "keep"}`} aria-label={`${d.title}, ${bytes(d.sizeOnDisk)}`} onClick={onOpen}>
 				<span className="art">
 					<Art src={d.poster} title={d.title} fallbackClass="noart" lazy />
-					{d.protectedId ? <span className="badge">Protected</span> : null}
+					{d.protectedBy ? <span className="badge" title={d.protectedBy}>Protected</span> : null}
 					{showDays ? <span className="days">{daysLabel(d.lastWatchedAt)}</span> : null}
 					{showWatches ? <span className="days">{`${d.watchCount}×`}</span> : null}
 					<span className="size">{d.sizeOnDisk ? bytes(d.sizeOnDisk) : "No file"}</span>
