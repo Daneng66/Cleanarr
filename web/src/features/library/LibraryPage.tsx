@@ -49,6 +49,7 @@ function Library({ types, requesters }: { types: RuleTypeDef[]; requesters: stri
 	const [search, setSearch] = useState("");
 	const [sort, setSort] = useState<SortKey>("title");
 	const [svc, setSvc] = useState<Svc>("all");
+	const [protection, setProtection] = useState<FilterState["protection"]>("any");
 
 	const load = useCallback(async () => {
 		setLoading(true);
@@ -56,7 +57,7 @@ function Library({ types, requesters }: { types: RuleTypeDef[]; requesters: stri
 			const r = await api.post<{ items: LibraryRow[]; warnings: string[] }>("/library", {
 				expression: filterExpression(filter, types), excludeTags: splitList(filter.tags), excludeTitles: splitList(filter.titleRx),
 			});
-			setRows(r.items); setSelected(new Set()); setShown(PAGE); setWarnings(r.warnings); setError(null); setLoaded(true);
+			setRows(r.items); setProtection(filter.protection); setSelected(new Set()); setShown(PAGE); setWarnings(r.warnings); setError(null); setLoaded(true);
 		} catch (e) {
 			setError((e as Error).message.split("\n").map(friendlyIssue(types)).join(" · "));
 		} finally { setLoading(false); }
@@ -74,8 +75,8 @@ function Library({ types, requesters }: { types: RuleTypeDef[]; requesters: stri
 
 	const visible = useMemo(() => {
 		const q = search.trim().toLowerCase();
-		return rows.filter((d) => (svc === "all" || d.service === svc) && (!q || d.title.toLowerCase().includes(q))).sort(SORTS[sort][1]);
-	}, [rows, search, svc, sort]);
+		return rows.filter((d) => (svc === "all" || d.service === svc) && (protection === "any" || !!d.protectedId === (protection === "protected")) && (!q || d.title.toLowerCase().includes(q))).sort(SORTS[sort][1]);
+	}, [rows, search, svc, sort, protection]);
 
 	const more = useRef<HTMLDivElement>(null);
 	useEffect(() => {

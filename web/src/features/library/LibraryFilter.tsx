@@ -10,8 +10,9 @@ export interface FilterState {
 	conds: CondNode[];
 	tags: string;
 	titleRx: string;
+	protection: "any" | "protected" | "unprotected";
 }
-export const emptyFilter: FilterState = { op: "and", conds: [], tags: "", titleRx: "" };
+export const emptyFilter: FilterState = { op: "and", conds: [], tags: "", titleRx: "", protection: "any" };
 
 export function LibraryFilter({ value, onChange, onApply, types, requesters }: { value: FilterState; onChange: (f: FilterState) => void; onApply: () => Promise<unknown>; types: RuleTypeDef[]; requesters: string[] }) {
 	const set = (patch: Partial<FilterState>) => onChange({ ...value, ...patch });
@@ -40,6 +41,12 @@ export function LibraryFilter({ value, onChange, onApply, types, requesters }: {
 						<div className="lbl-row"><div className="lbl">Exclude titles (regex)</div><TitleRegexTip /></div>
 						<input placeholder="e.g. ^Star Wars" aria-label="Exclude title patterns" value={value.titleRx} onChange={(e) => set({ titleRx: e.target.value })} />
 					</div>
+				</div>
+				<div className="field">
+					<div className="lbl">Protection</div>
+					<select aria-label="Protection" value={value.protection} onChange={(e) => set({ protection: e.target.value as FilterState["protection"] })}>
+						<option value="any">Protected and unprotected</option><option value="protected">Protected only</option><option value="unprotected">Unprotected only</option>
+					</select>
 				</div>
 				<div className="row end"><Button icon="refresh" className="primary" onAction={onApply}>Apply filter</Button></div>
 			</div>
