@@ -144,7 +144,7 @@ CLEANARR_API_KEY=change-me npm start
 ```
 
 **Unraid**: add the template manually from
-`https://raw.githubusercontent.com/Daneng66/Cleanarr/main/unraid/cleanarr.xml`. The image is `ghcr.io/daneng66/cleanarr`.
+`https://raw.githubusercontent.com/Daneng66/Cleanarr/main/unraid/cleanarr.xml`. The image is `ghcr.io/daneng66/cleanarr`. The template publishes the web UI on host port **8085** (the container itself listens on 8080), so open `http://[server-ip]:8085`.
 
 Then:
 
