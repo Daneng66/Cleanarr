@@ -9,6 +9,8 @@ export interface WatchProvider {
 }
 
 const PAGE = 500;
+/** Per-episode key for plays whose account can't be named; never matches a real user. */
+const UNKNOWN_USER = "(unknown account)";
 /** Hard ceilings so a runaway library/history can't hang a run; exceeding them fails closed. */
 const MAX_HISTORY_ROWS = 750_000;
 const MAX_LIBRARY_ITEMS = 250_000;
@@ -143,11 +145,13 @@ export function createPlexProvider(instance: Pick<Instance, "url" | "apiKey">, f
 				if (isEpisode && typeof row.parentIndex === "number") {
 					// Season aggregates are keyed "<show ratingKey>#<season>" and resolve through the show's guids.
 					const season = add(`${key}#${row.parentIndex}`, "season", row, user);
-					if (user && typeof row.index === "number") {
+					if (typeof row.index === "number") {
+						// A play by an account Plex doesn't list still means the episode was watched.
+						const who = user ?? UNKNOWN_USER;
 						season.episodes ??= new Map();
-						const set = season.episodes.get(user) ?? new Set<number>();
+						const set = season.episodes.get(who) ?? new Set<number>();
 						set.add(row.index);
-						season.episodes.set(user, set);
+						season.episodes.set(who, set);
 					}
 				}
 			}

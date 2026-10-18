@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import { ExpressionError, MAX_DEPTH, MAX_NODES, evaluateExpression, matchedReasons, parseExpression, requirements, usesType } from "../src/rules/expression.js";
 import { RULE_TYPES, describeRuleTypes, type EvalContext, type Tri } from "../src/rules/registry.js";
 import { firstAction, servicesOf, slotOf, toActions } from "../src/rules/actions.js";
@@ -7,6 +7,23 @@ import { getRegexError, safeRegex } from "../src/rules/regex.js";
 import { DAY, GB, NOW, movie, old, setup } from "./helpers.js";
 import type { FileInfo, LibraryItem, RuleRecord, WatchInfo } from "../src/types.js";
 import type { SeerrRequest } from "../src/seerr/seerr.js";
+
+// ── Coverage guard: every filter type must be seen producing both true and false ──
+
+const SEEN = new Map<string, Set<Tri>>();
+for (const [type, def] of RULE_TYPES) {
+	const original = def.evaluate.bind(def);
+	def.evaluate = (item, params, c) => {
+		const out = original(item, params, c);
+		if (!SEEN.has(type)) SEEN.set(type, new Set());
+		SEEN.get(type)!.add(out.state);
+		return out;
+	};
+}
+afterAll(() => {
+	const missing = [...RULE_TYPES.keys()].filter((t) => !SEEN.get(t)?.has("true") || !SEEN.get(t)?.has("false"));
+	expect(missing, "filters never tested to both true and false").toEqual([]);
+});
 
 // ── Builders ────────────────────────────────────────────────────────────────
 
@@ -645,6 +662,24 @@ describe("watch rules", () => {
 			expect(stale([ep(1, { hasFile: false })])).toBe("false");
 			expect(stale([ep(1, { added: null })])).toBe("false");
 			expect(stale([ep(1, { hasFile: false }), ep(2)])).toBe("true");
+		});
+		it("uses the date the file was added, not the air date", () => {
+			expect(stale([ep(1, { airDate: ago(900), added: ago(5) })])).toBe("false");
+			expect(stale([ep(1, { airDate: ago(5), added: ago(100) })])).toBe("true");
+		});
+		it("is true when watch history answered with nothing for the season", () => {
+			expect(st({ type: "stale_unwatched_episode", params: { days: 30 } }, season([ep(1)]), withWatch(null))).toBe("true");
+		});
+		it("a season with no episodes listed is false", () => {
+			expect(stale([])).toBe("false");
+		});
+		it("each user's watched episodes count, and an episode nobody watched stays stale", () => {
+			expect(stale([ep(1), ep(2)], { alice: [2], bob: [1] })).toBe("false");
+			expect(stale([ep(1), ep(2)], { alice: [2], bob: [2] })).toBe("true");
+		});
+		it("reports the oldest stale unwatched episode in the reason", () => {
+			const r = ev({ type: "stale_unwatched_episode", params: { days: 30 } }, season([ep(1, { added: ago(60) }), ep(2, { added: ago(90) })]), withWatch({}));
+			expect(r.reason).toMatch(/episode 2 added 90 days ago/);
 		});
 		it("only applies to seasons", () => {
 			expect(stale([], {}, 30, base())).toBe("false");

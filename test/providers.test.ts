@@ -63,6 +63,15 @@ describe("Plex provider", () => {
 		expect(lookup(mItem(2))).toBeUndefined(); // in Plex, never watched
 		expect(warnings).toEqual([]);
 	});
+	it("counts an episode played by an account Plex doesn't list as watched", async () => {
+		const row = (n: number, accountID?: number) => ({ type: "episode", ratingKey: `e${n}`, grandparentRatingKey: "200", parentIndex: 1, index: n, ...(accountID !== undefined ? { accountID } : {}), viewedAt: day(1) });
+		const { fn } = fakePlex({ history: [row(1, 99), row(2), row(3, 2)] });
+		const { lookup } = await createPlexProvider({ url: "http://plex", apiKey: "tok" }, fn).load();
+		const info = lookup({ ...sItem(1), kind: "season" as const, season: { number: 1, episodes: [] } });
+		const watched = new Set([...(info?.episodesByUser?.values() ?? [])].flatMap((x) => [...x]));
+		expect([...watched].sort()).toEqual([1, 2, 3]);
+		expect(info?.watchedBy).toEqual(["Alice"]); // unnamed plays don't invent a user
+	});
 	it("tracks which episodes each user watched per season", async () => {
 		// Show identified only by grandparentKey, as some Plex servers send it.
 		const ep = (season: number, n: number, accountID: number) => ({ type: "episode", ratingKey: `e${season}${n}`, grandparentKey: "/library/metadata/200", parentIndex: season, index: n, accountID, viewedAt: day(1) });
