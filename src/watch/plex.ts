@@ -9,7 +9,7 @@ export interface WatchProvider {
 }
 
 const PAGE = 500;
-/** Per-episode key for plays whose account can't be named; never matches a real user. */
+/** Stands in for plays whose account Plex doesn't list (removed or home users), so they still count as watched by someone. */
 const UNKNOWN_USER = "(unknown account)";
 /** Hard ceilings so a runaway library/history can't hang a run; exceeding them fails closed. */
 const MAX_HISTORY_ROWS = 750_000;
@@ -126,11 +126,11 @@ export function createPlexProvider(instance: Pick<Instance, "url" | "apiKey">, f
 
 			type Agg = { kind: "movie" | "series" | "season"; last: number; count: number; users: Set<string>; episodes?: Map<string, Set<number>> };
 			const roots = new Map<string, Agg>();
-			const add = (key: string, kind: Agg["kind"], row: PlexMeta, user: string | undefined) => {
+			const add = (key: string, kind: Agg["kind"], row: PlexMeta, user: string) => {
 				const agg = roots.get(key) ?? { kind, last: 0, count: 0, users: new Set<string>() };
 				agg.count++;
 				if (typeof row.viewedAt === "number") agg.last = Math.max(agg.last, row.viewedAt);
-				if (user) agg.users.add(user);
+				agg.users.add(user);
 				roots.set(key, agg);
 				return agg;
 			};
@@ -140,18 +140,16 @@ export function createPlexProvider(instance: Pick<Instance, "url" | "apiKey">, f
 				if (!isEpisode && row.type !== "movie") continue;
 				const key = String(isEpisode ? (row.grandparentRatingKey ?? /\/(\d+)$/.exec(row.grandparentKey ?? "")?.[1] ?? "") : (row.ratingKey ?? ""));
 				if (!key) continue;
-				const user = row.accountID !== undefined ? names.get(row.accountID) : undefined;
+				const user = (row.accountID !== undefined ? names.get(row.accountID) : undefined) ?? UNKNOWN_USER;
 				add(key, isEpisode ? "series" : "movie", row, user);
 				if (isEpisode && typeof row.parentIndex === "number") {
 					// Season aggregates are keyed "<show ratingKey>#<season>" and resolve through the show's guids.
 					const season = add(`${key}#${row.parentIndex}`, "season", row, user);
 					if (typeof row.index === "number") {
-						// A play by an account Plex doesn't list still means the episode was watched.
-						const who = user ?? UNKNOWN_USER;
 						season.episodes ??= new Map();
-						const set = season.episodes.get(who) ?? new Set<number>();
+						const set = season.episodes.get(user) ?? new Set<number>();
 						set.add(row.index);
-						season.episodes.set(who, set);
+						season.episodes.set(user, set);
 					}
 				}
 			}

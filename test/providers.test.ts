@@ -70,7 +70,17 @@ describe("Plex provider", () => {
 		const info = lookup({ ...sItem(1), kind: "season" as const, season: { number: 1, episodes: [] } });
 		const watched = new Set([...(info?.episodesByUser?.values() ?? [])].flatMap((x) => [...x]));
 		expect([...watched].sort()).toEqual([1, 2, 3]);
-		expect(info?.watchedBy).toEqual(["Alice"]); // unnamed plays don't invent a user
+		expect(info?.watchedBy).toContain("Alice");
+		expect(info?.watchedBy.length).toBe(2); // the unlisted accounts count as one other watcher, not as a named user
+	});
+	it("a movie played only by an unlisted account still counts as watched by someone other than the named users", async () => {
+		const { fn } = fakePlex({ history: [{ type: "movie", ratingKey: "100", accountID: 77, viewedAt: day(2) }, { type: "movie", ratingKey: "101", viewedAt: day(3) }] });
+		const { lookup } = await createPlexProvider({ url: "http://plex", apiKey: "tok" }, fn).load();
+		const m = lookup(mItem(1));
+		expect(m?.watchCount).toBe(1);
+		expect(m?.watchedBy).toHaveLength(1);
+		expect(m?.watchedBy.some((u) => ["owner", "Alice"].includes(u))).toBe(false);
+		expect(lookup(mItem(2))?.watchedBy).toHaveLength(1);
 	});
 	it("tracks which episodes each user watched per season", async () => {
 		// Show identified only by grandparentKey, as some Plex servers send it.
